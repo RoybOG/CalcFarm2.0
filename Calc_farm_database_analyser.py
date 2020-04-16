@@ -1,9 +1,8 @@
 import sqlite3
-import pickle
 import os
 import json
 import enum
-from itertools import *
+
 class ColumnData(enum.Enum):
     cid = 0
     name = 1
@@ -56,15 +55,31 @@ class WritingError(Exception):
 """
 
 
-#Get rid of it!
+def complex_to_sql(comp_input):
+    """
+    Turns an input that it's type can't be inserted normally into a sql table to a string via "repr"
+    (It turns a string also to an repr so it can diffretiate between different types later)
+
+    #and it adds quotes to a string so the sql can know it's a string.
+    :param str_input: the string to be dumped to the database.
+    :return: the string surrounded by with quotes
+    """
+    #if sqlite3.complete_statement(str_input):
+    #    raise WritingError("SQlite injection")
+
+    return repr(comp_input)
+
+
 data_types_encode = {
     int: {'type code': ['int','integer']},
-    str: {'type code': ['varchar']},
+    str: {'type code': ['varchar'], 'dumping function': complex_to_sql},
     float: {'type code': ['float']},
+    list: {'type code': ['text'], 'dumping function': complex_to_sql},
     bytes: {'type code': ['blob']},
     type(None): {'type code': ['null']}
 }
 
+#
 
 def add_handler(new_type, type_codes, dumping_function, loading_function):
     """
@@ -81,17 +96,14 @@ def add_handler(new_type, type_codes, dumping_function, loading_function):
 
 # for type_value in data_types_encode.values():
 #    type_value['type code'] = type_value['type code'] + '({})'.format(type_value['limit size'])
+__compile_decode_symbol = "$"
 
 class Database:
     """
     This class handles a database, reads from it information and
     """
+    __compile_decode_symbol = "$"
     __add_args_name = "add_args"
-    __encoded_data_type = "longblob"
-    # This module will automaicly decode anything in columns of data type "longblob" by unpickling.
-    # This is how the module saves data types python supports but SQL doesn't like lists and dictionaries:
-    # It pickles them.
-    # SO the user MUST saves dictionaries and lists and such under the data type "longblob".
 
     def __init__(self, db_name, db_loc=os.getcwd()):
         self.db_name = db_name
@@ -109,112 +121,220 @@ class Database:
 
         self.db_cursor = self.db_con.cursor()
 
-    def execute_sql_code(self, sql_code, code_args=None, encrypt_args=None):
+    @staticmethod
+    def __compile_code(sql_code, code_args=None):
+        """
+        Compiles
+        :param sql_code:
+        :param code_args:
+        :return:
+        """
+
+        add_args = None
+        if sql_code.count(Database.__compile_decode_symbol) > 0:
+            if code_args is None:
+                code_args = {}
+            else:
+                if isinstance(code_args, dict):
+                    for code_arg_key, code_value in code_args.items():
+                        if code_arg_key == Database.__add_args_name:
+                            add_args = code_value
+                        else:
+                            if sql_code.find(":" + code_arg_key) == -1:
+                                raise WritingError("A key in the dictionary doesn't have a reference in the code.")
+
+                            f = sql_code.find(Database.__compile_decode_symbol + ":" + code_arg_key)
+                            if f > -1:
+
+                                code_args[code_arg_key] = Database.__type_dump(code_value,
+                                                                    data_types_encode[type(code_value)]["type code"][0])
+                                sql_code = sql_code[0:f] + sql_code[f + 1:-1] + sql_code[-1]
+
+                elif isinstance(code_args, list):
+                    code_dict = {}
+                    code_list = code_args
+                    counter = 0
+                    s_point = 0
+                    finished = False
+                    while not finished:
+                        f = sql_code.find("?", s_point + 1)
+                        if f == -1:
+                            finished = True
+                        else:
+                            if counter == len(code_list):
+                                raise WritingError("The amount of question marks don't fit the number of arguments")
+                            if sql_code[f - 1] == Database.__compile_decode_symbol:
+                                code_list[counter] = Database.__type_dump(code_list[counter],
+                                                                         data_types_encode[type(code_list[counter])][
+                                                                             "type code"][0])
+                                sql_code = sql_code[0:f - 1] + ":a" + str(counter) + sql_code[f + 1:-1] + sql_code[-1]
+                            else:
+                                sql_code = sql_code[0:f] + ":a" + str(counter) + sql_code[f + 1:-1] + sql_code[-1]
+
+                            code_dict["a" + str(counter)] = code_list[counter]
+                            counter += 1
+                    code_args = code_dict
+                else:
+                    raise WritingError('The "code_args" is not a dictionary or a list.')
+
+            if add_args is not None:
+                if isinstance(add_args, list) and isinstance(code_args, dict):
+                    counter = 0
+                    s_point = 0
+                    finished = False
+                    while not finished:
+                        f = sql_code.find("?", s_point + 1)
+                        if f == -1:
+                            finished = True
+                        else:
+                            if counter == len(add_args):
+                                raise WritingError("The amount of question marks don't fit the number of arguments")
+                            if sql_code[f-1] == Database.__compile_decode_symbol:
+                                add_args[counter] = Database.__type_dump(add_args[counter],
+                                                            data_types_encode[type(add_args[counter])]["type code"][0])
+                                sql_code = sql_code[0:f-1] + ":b" + str(counter) + sql_code[f + 1:-1] + sql_code[-1]
+                            else:
+                                sql_code = sql_code[0:f] + ":b" + str(counter) + sql_code[f + 1:-1] + sql_code[-1]
+
+                            code_args["b" + str(counter)] = add_args[counter]
+                            counter += 1
+
+                    code_args.pop(Database.__add_args_name)
+                else:
+                    raise WritingError("The additional arguments have to be a list, if it's a dictionary,"
+                                       "it should have been in the dictionary")
+
+
+            d_num = sql_code.count(Database.__compile_decode_symbol)
+            if d_num > 0:
+                if d_num % 2 == 0:
+                    try:
+                        counter = 0
+                        finished = False
+                        while not finished:
+                            first_d = sql_code.find(Database.__compile_decode_symbol)
+                            if first_d == -1:
+                                finished = True
+                            else:
+                                second_d = sql_code.find(Database.__compile_decode_symbol, first_d + 1)
+                                d_str = sql_code[first_d + 1:second_d]
+                                d_value = eval(d_str)
+                                d_decoded_value = Database.__type_dump(d_value,
+                                                                data_types_encode[type(d_value)]["type code"][0])
+                                sql_code = sql_code.replace(sql_code[first_d: second_d + 1], ":c" + str(counter))
+                                code_args["c" + str(counter)] = d_decoded_value
+                                counter += 1
+                    except (NameError, SyntaxError):
+                        raise WritingError('You did not "repr" the value correctly.')
+
+        return sql_code, code_args
+
+    def execute_sql_code(self, sql_code, code_args=None):
         """
             Executes a code that changes the database, and saves the changes.
-            It is important to know that when the program "dumps" data into a database, it encrypts data types SQL
-            doesn't support by pickling them and saves them as bytes.
             :param sql_code: a string of a sql code.
-            :param code_args: a dictionary/list of values you want to safely escape values into the code.
-            :param encrypt_args: a dictionary/list of values you want to safely escape values into the code that
-            are data types SQL doesn't support: what isn't ints, doubles or floats, strings and bytes.
-            Data types like lists, dictionaries and such.
-            It is important if the condition in your code checks values like these, it won't find them.
-            So it is best to put them here.
-            Note that the program automatically encrypts values that are not in the "code_args" or "encrypt_args",
-            like the values you "dump" or update your database with.
-            Note also that if the "code_args" and "encrypt_args" are of different data types, a dictionary o a list,
-            it will unify them.
+            :param code_args:a dictionary/list of values you want to safely escape values into the code.
 
-            If it's a dictionary, you escape values, by writing a certain string(a name), with a ":" before it
+
+            If it's a dictionary, you escape values, by writing a certian string(a name), with a ":" before it
             in the code where you want to insert the value. Then in the dictionary, pair the value to that string
             (without the ":").
-            If it's a list, then write "?" in the code where you want to insert the value.
+            Also, if it's a list, then write "?" in the code where you want to insert the value.
 
             If you have in your code "?" and ":" and you want to escape both a list and a dictionary,
             then add to the dictionary a key "add_args"(for "additional arguments"), that is paired with the list.
 
-        """
-        with self.db_con:
-            try:
-                if code_args:
-                    self.db_cursor.execute(sql_code, code_args)
-                else:
-                    self.db_cursor.execute(sql_code)
+            It is important to know that when the program "dumps" data into a database, it will encode it,
+            based on it's own algorithms.
+            For example, a normal string will be different from same string if it was "dumped"
+            into a table, so if you search for a row with the normal string, it won't find.
 
-                self.db_con.commit()
-            except sqlite3.Error as e:
-                print(e)
-                # raise e
+            So if you want to ascape values and check for them in the database, it is prefered to add before the strings
+            or the "?" in the code the "$" symbol, to tell the program to decode it.
+            for exemple, if you wrote in the code: "where id = $?", it will decode it,
+            or "where id=$:user_id", it will decode the value that is pair with the string "user_id".
+            When you want to decode constant values, wrap it's "repr" version with $:
+            for example: "where id = $"'hi'"$", it would evaluate the expression between the "$", to know
+            what type it is, and replace in the args, with the decoded vesrsion)
+        """
+        sql_code, code_args = Database.__compile_code(sql_code, code_args)
+        #print(sql_code)
+        try:
+            if code_args is None:
+                self.db_cursor.execute(sql_code)
+            else:
+                self.db_cursor.execute(sql_code, code_args)
+
+            self.db_con.commit()
+        except sqlite3.Error as e:
+            print(e)
 
     def collect_sql_quarry_result(self, sql_code, quarry_args=None, num_of_rows=None, filer_unique_row=True):
         """
-        Asks for information from the database. It is returned in the form of a query.
+        Asks for information from the database
         :param sql_code: a string of a sql code
-        :param num_of_rows: The number of top rows you want from a quarry result
+        :param num_of_rows: The number of top rows you want from a querry result
         (if the argument is null then  it will just return all the rows it found)
         :param quarry_args:a dictionary/list of values you want to safely escape values into the code.
-        :param filer_unique_row: if the quarry has one row, it will automatically return the row
+        :param filer_unique_row: if querry returns one row, it will automaticlly return the row
         instead of a list of rows with one element.
         If you don't want this to happen, enter False.
         :return: a query as a list of rows. If it didn't find an rows, it will return None
         """
-        with self.db_con:
+        sql_code, quarry_args = Database.__compile_code(sql_code, quarry_args)
+        try:
             if quarry_args is None:
-                quarry_args = []
-            try:
+                self.db_cursor.execute(sql_code)
+            else:
                 self.db_cursor.execute(sql_code, quarry_args)
 
-                if not num_of_rows:
-                    query_result = self.db_cursor.fetchall()
-                elif num_of_rows > 0:
-                    query_result = self.db_cursor.fetchmany(num_of_rows)
-                else:
-                    raise WritingError("The number of rows needs to be positive")
+            if num_of_rows is None:
+                query_result = self.db_cursor.fetchall()
+            elif num_of_rows > 0:
+                query_result = self.db_cursor.fetchmany(num_of_rows)
+            else:
+                raise WritingError("The number of rows needs to be positive")
 
-                if len(query_result) == 0:
-                    return None
-                elif len(query_result) == 1 and filer_unique_row:
-                    return query_result[0]
-                else:
-                    return query_result
-            except sqlite3.Error as e:
-                print(e)
-                # raise e
+            if len(query_result) == 0:
+                return None
+            elif len(query_result) == 1 and filer_unique_row:
+                return query_result[0]
+            else:
+                return query_result
+        except sqlite3.Error as e:
+            print(e)
 
-    def table_info(self, table_name):
+    def table_info(self, table_name, return_dict=True):
         """
         Returns data on all the columns of a table.
         :param table_name: The name of the table.
+        :param return_dict: "True" if the user wants the table data as a dictionary, where
+        every column name is paired with it's data, "false" as a tuple of columns.
         :return: a list/dictionary of all the columns' data. it will return None if there are no tables.
-        It will also return columns that hold encoded python types. They will always be "longblob"
 
         """
-        raw_table_info = self.collect_sql_quarry_result("pragma table_info({});".format(table_name))
-        # This holds the information about the table as it is given by the Sqlite3 module: as a list of tuples.
-        # For conveniency, I'll transform this into a dictionary, where each column_name is associated with its details.
-        encrypted_columns = []
-        # This will store all the names of the columns that are meant to store data types that SQL doesn't support.
-        # Thier data type is "longblob" so the program can know to encrypt and decrypt them.
-        if raw_table_info is None:
-            return None, None
+        table_info = self.collect_sql_quarry_result("pragma table_info({});".format(table_name))
+        if table_info is None:
+            return None
 
-        info_dict = {}
-        for info_column in raw_table_info:
-            info_dict[info_column[ColumnData.name.value]] = info_column
-            if info_column[ColumnData.type.value] == Database.__encoded_data_type:
-                encrypted_columns.append(info_column[ColumnData.name.value])
-
-        return info_dict, encrypted_columns
+        if return_dict:
+            info_dict = {}
+            for info_column in table_info:
+                info_dict[info_column[ColumnData.name.value]] = info_column
+            return info_dict
+        else:
+            return table_info
 
     def does_table_exists(self, table_name):
         """
-        checks for the table exists in the user's database.
-        I don't check if the table is in the main sql table, so hackers won't be able to gain access to the main table.
+        checks for informatoon on the table the user wants to create.
+        if the table already exists, it should return a list full of all of it's columns.
+        if it gets None then it means the query of the table's data is empty and the table doesn't exist
+        I don't check if the table is in the main sql table, so no one will know what kind of sql I'm using.
         :param table_name: the name of the table
         :return: True if it exists, False otherwise.
         """
-        table_info = self.collect_sql_quarry_result("pragma table_info({});".format(table_name))
+        table_info = self.table_info(table_name, return_dict=False)
         return table_info is not None
 
     def create_table(self, table_sql_code, replace_table=False):
@@ -230,6 +350,8 @@ class Database:
         :param replace_table: If it's True and the table you want to create already exists, it will erase
         the current one and replace it with the
         """
+
+
         table_index = find_with_different_cases(table_sql_code, "TABLE")
         if table_index == -1:
             raise WritingError("This isn't a proper code for creating a table")
@@ -245,48 +367,30 @@ class Database:
             self.execute_sql_code(table_sql_code)
 
     @staticmethod
-    def __type_load(encoded_value):
+    def __type_load(value_from_database):
         """
 
         :param value_from_database: This value was loaded directly from the database
         :return:
         """
-        try:
-            return pickle.loads(encoded_value)
-        except pickle.PickleError:
-            return encoded_value
+        if isinstance(value_from_database, str):
+            try:
+                val = eval(value_from_database)
+            except (NameError, SyntaxError):
+                # It's probably a normal string.
+                val = value_from_database
+        else:
+            val = value_from_database
 
-    @staticmethod
-    def _transfer_list_to_dictionary(sql_code, dict_args, list_args):
-        """
-        This is transforming values that are ascaped via a list, to values that are escaped via a dictionary.
-        :param sql_code:The original sql_code
-        :param dict_args:A dictionary of arguments you want to add the list arguments.
-        :param list_args:The list of arguments you want to escape.
-        :return:
-        """
-        index = 0
-        counter = 0
-        s_point = 0
-        finished = False
+        val_type = type(val)
 
-        while not finished:
-            f = sql_code.find("?", s_point + 1)
-            if f == -1:
-                finished = True
+        if val_type in data_types_encode:
+            if 'loading function' in data_types_encode[val_type]:
+                return data_types_encode[val_type]['loading function'](val)
             else:
-                sql_code = sql_code[0:f] + ":a" + str(counter) + sql_code[f + 1:-1] + sql_code[-1]
-
-                dict_args["a" + str(counter)] = list_args[counter]
-                counter += 1
-                if counter == len(list_args):
-                    raise WritingError("The amount of question marks don't fit the number of arguments")
-                f = sql_code.find("?", s_point + 1)
-
-            if counter < len(list_args):
-                raise WritingError("The amount of question marks don't fit the number of arguments")
-
-            return dict_args, sql_code
+                return val
+        else:
+            raise TypeError("This module doesn't support this type of variable")
 
     def load_data(self, table_name, condition=None, select_args=None, select_columns=None, distinct=False, row_num=None,
                   order_by_columns=None, order_type="ASC", filer_unique_row=True, decode_rows=True):
@@ -325,10 +429,12 @@ class Database:
         :return: a list of the rows it found.
          and the data in every row is presented as a dictionary of the column name and the value
          in that column.
-           It returns None if it found no columns
+         It returns None if it found no columns
         in that column
         """
-        info_dict, encrypted_columns = self.table_info(table_name)
+        info_dict = self.table_info(table_name)
+        if info_dict is None:
+            raise WritingError("The table doesn't exist")
         # print(table_info)
         select_code = "Select "
         if distinct:
@@ -337,16 +443,33 @@ class Database:
         if select_columns is None:
             select_code += "* "
         else:
-            encrypted_columns = iter(set(encrypted_columns) & set(select_columns))
-            #I will just iterate over this, so therre is no use of created a list that will cost more memory.
-            select_code += ", ".join(select_columns)
+            first_column = True
+            for column_name in select_columns:
+                if column_name not in info_dict:
+                    raise WritingError("You wanted to check a column that doesn't exist")
+
+                if first_column:
+                    first_column = False
+                else:
+                    select_code += ", "
+                select_code += column_name
 
         select_code += " \nfrom " + table_name
-        if condition:
+        if condition is not None:
             select_code += "\n where " + condition
 
-        if order_by_columns:
-            select_code += " \n order by " + ", ".join(order_by_columns)
+        if order_by_columns is not None:
+            select_code += " \n order by "
+            first_column = True
+            for column_name in order_by_columns:
+                if column_name not in info_dict:
+                    raise WritingError("You wanted to check a column that doesn't exist")
+
+                if first_column:
+                    first_column = False
+                else:
+                    select_code += ", "
+                select_code += column_name
 
             if order_type.lower() in ["asc","desc"]:
                 select_code += " " + order_type
@@ -356,28 +479,24 @@ class Database:
         select_code += ";"
         raw_data = self.collect_sql_quarry_result(select_code, quarry_args=select_args, num_of_rows=row_num,
                                                   filer_unique_row=False)
-        #raw data holds all quarry as it is given by the squlite3 module:
-        # a list of rows, each are each a tuple of values in each column by order.
-        # each row now will be translated it to a dictionary where the key of each value is the column name
-        # it is saved in.
-
         if raw_data is None:
             return None
 
         if decode_rows:
             data_lines = []
             if select_columns is None:
+                column_names = list(info_dict)
                 for raw_row in raw_data:
-                    translated_row = dict(zip_longest(info_dict.keys(), raw_row))
-                    for encrypted_column in encrypted_columns:
-                        translated_row[encrypted_column] = self.__type_load(translated_row[encrypted_column])
-                    data_lines.append(translated_row)
+                    decoded_row = {}
+                    for i in range(0, len(raw_row)):
+                        decoded_row[column_names[i]] = self.__type_load(raw_row[i])
+                    data_lines.append(decoded_row)
             else:
                 for raw_row in raw_data:
-                    translated_row = dict(zip_longest(select_columns,raw_row))
-                    for encrypted_column in encrypted_columns:
-                        translated_row[encrypted_column] = self.__type_load(translated_row[encrypted_column])
-                    data_lines.append(translated_row)
+                    decoded_row = {}
+                    for i in range(0, len(raw_row)):
+                        decoded_row[select_columns[i]] = self.__type_load(raw_row[i])
+                    data_lines.append(decoded_row)
 
             if len(data_lines) == 1 and filer_unique_row:
                 return data_lines[0]
@@ -390,7 +509,7 @@ class Database:
                          check_args=None, row_num=None, return_data=False):
         """
         Checks for records that satisfy a certain condition.
-        You can't escape a table name and the condition, so you need to ensure that the user can't enter the table name
+        You can't escape a table name and the condition, you need to ensure that the user can't enter the table name
         or condition.
         :param table_name: the table name.
 
@@ -402,7 +521,7 @@ class Database:
         distinct. It will return
 
         :param distinct_columns: if "distinct" is True, then it can get a list of columns the user would like to check
-        has distinct values(If distinct is False, then it will ignore it)
+        has distnict values(If distinct is False, then it will ignore it)
         :param condition: the condition the rows need to satisfy to be loaded. The condition needs to be written in sql.
         Make sure the user can't affect the condition, because the user can do an injection.
 
@@ -419,12 +538,12 @@ class Database:
         :return: if "return_data" is "True", it will return a list of all the wanted rows
         (None if there are none) and if "return_data" is "False",
         it will return "True" if there are rows that satisfy the condition, "False" if there are None.
-        If "distinct" is True and "Return_Data" is false, then it will also return if the condition is met and if what
-        fulfilled the conditions is distinct as a tuple.
         """
         if not self.does_table_exists(table_name):
             raise WritingError("The table doesn't exist")
 
+
+        #
         if return_data:
 
             result = self.load_data(table_name, condition, select_args=check_args, distinct=False,
@@ -436,23 +555,29 @@ class Database:
             if distinct:
                 if result is None:
                     return False, False
-                info_dict, encrypted_columns = self.table_info(table_name)
+                info_dict = self.table_info(table_name)
 
                 if distinct_columns is None:
-                    distinct_columns = info_dict.keys()
-
-                for column_name in distinct_columns:
-                    if column_name not in info_dict:
-                        raise WritingError("The column doesn't exist")
-                    sql_code = "Select distinct {} from {} where {};".format(column_name, table_name, condition)
-                    dis_result = self.collect_sql_quarry_result(sql_code, quarry_args=check_args,
-                                                                filer_unique_row=False)
-                    if len(dis_result) < len(result):
-                        return True, False
-                return True, True
+                    for column_name in info_dict.keys():
+                        sql_code = "Select distinct {} from {} where {};".format(column_name, table_name, condition)
+                        dis_result = self.collect_sql_quarry_result(sql_code, quarry_args=check_args,
+                                                                    filer_unique_row=False)
+                        if len(dis_result) < len(result):
+                            return True, False
+                    return True, True
+                else:
+                    for column_name in distinct_columns:
+                        if column_name not in info_dict:
+                            raise WritingError("The column doesn't exist")
+                        sql_code = "Select distinct {} from {} where {};".format(column_name, table_name, condition)
+                        dis_result = self.collect_sql_quarry_result(sql_code, quarry_args=check_args,
+                                                                    filer_unique_row=False)
+                        if len(dis_result) < len(result):
+                            return True, False
+                    return True, True
             return result is not None
 
-    def find_specific_record(self, table_name, values, distinct=False, select_columns=None,
+    def find_specific_record(self, table_name, values, check_args=None, distinct=False, select_columns=None,
                              row_num=None, return_data=False):
         """
         Returns records that have a specific values in a specific columns.
@@ -470,6 +595,8 @@ class Database:
         :param select_columns: A list of names of the columns you want load from if "return_data" is "True".
         If it's "None", then it will load all the columns.
 
+        :param check_args: a dictionary/list of values you want to safely escape values into the code of the condition.
+
         :param row_num: The top number of rows you want to be loaded from what it found.
         If it is "None", it will return all the rows it found.
 
@@ -482,7 +609,7 @@ class Database:
         """
 
         condition = ""
-        info_dict, encrypted_columns = self.table_info(table_name)
+        info_dict = self.table_info(table_name)
         if info_dict is None:
             raise WritingError("The table doesn't exist")
         first_column = True
@@ -499,6 +626,14 @@ class Database:
             condition += '{}=:column_{}'.format(column_name, column_name)
             check_values["column_" + column_name] = self.__type_dump(value,
                                                                      info_dict[column_name][ColumnData.type.value])
+
+        if check_args is not None:
+            if isinstance(check_args, dict):
+                check_values.update(check_args)
+            elif isinstance(check_args, list):
+                check_values[Database.__add_args_name] = check_args
+            else:
+                raise WritingError('The "code_args" is not a dictionary or a list.')
 
         return self.check_for_record(table_name, condition, distinct=distinct, distinct_columns=list(values.keys()),
                                      select_columns=select_columns, check_args=check_values, row_num=row_num,
@@ -530,11 +665,11 @@ class Database:
         The condition needs to be written in sql.
         Make sure the user can't affect the condition, because the user can do an injection.
 
-        :param code_args: A dictionary of arguemnts to ascape into the condition. If you HAVE to ascape a list, you can,
-        but it will be transferred to a dictionary, which will be slow the program alot more.
+        :param code_args: a dictionary(This time it can't be a list)
         of code you want to safely escape into the code of the condition.
-        If it's a dictionary, the keys need to be names that are present in where you want to escape the value to in
+        If it's a diciotnary, the keys need to be names that are present in where you want to escape the value to in
         the code, with ":" before it.
+        and if it's a dictionary
         """
 
         if not self.does_table_exists(table_name):
@@ -542,7 +677,7 @@ class Database:
 
         update_code = "update " + table_name + "\n set "
         condition_code = "not ("
-        info_dict, encrypted_columns = self.table_info(table_name)
+        info_dict = self.table_info(table_name)
 
         first_column = True
         value_esc = {}
@@ -573,35 +708,41 @@ class Database:
             if isinstance(code_args, dict):
                 value_esc.update(code_args)
             elif isinstance(code_args, list):
-                # This is the reason why it is prefered to ascape to an update command a dictioanry, becuase it can't
-                # ascape the dictionary of values to update and the list of arguments at the same time.
-                # So the program will inevitably
-                value_esc, update_code = self._transfer_list_to_dictionary(update_code, value_esc, code_args)
+                value_esc[Database.__add_args_name] = code_args
             else:
                 raise WritingError('The "code_args" is not a dictionary or a list.')
 
         self.execute_sql_code(update_code, code_args=value_esc)
 
     @staticmethod
-    def __type_dump(column_value, column_type):
+    def __type_dump(input_value, column_code):
         """
-        How this module handles data types that SQL doesn't support but python does, is by ecrpyting them via pickling,
-        and saving them in a column marked by the data_type "longblob", to
         Handles a value that the program wants to write in the database by decoding it by it's special protocol.
         The protocol enables saving python types.
-        :param column_value:the value you want to encrypt.
+        :param input_value:the value
+        :param column_code:The type of data that is saved in that column
         :return: the
         """
 
-        if type(column_value) in data_types_encode:
-            return column_value
-        else:
-            if column_type == Database.__encoded_data_type:
-                return pickle.dumps(column_value)
+        if input_value is None:
+            return None
+
+        column_code = column_code.lower()
+
+        value_type = type(input_value)
+        if value_type in data_types_encode:
+
+            column_name = column_code.strip(')').split('(')[0]
+            if column_name in data_types_encode[value_type]['type code']:
+                # Checks if the type of the input fits the types of values that are saved in the column
+                if 'dumping function' in data_types_encode[type(input_value)]:
+                    return data_types_encode[value_type]['dumping function'](input_value)
+                else:
+                    return input_value
             else:
-                raise WritingError("You are saving a data type that SQL doesn't support in a regular column.\n" +
-                                   'The column needs to have the data type of "{}"'.format(Database.__encoded_data_type)
-                                   + ' so that the module would know to encrypt and decrypt it.')
+                raise WritingError("The value type doesn't fit the column's type")
+        else:
+            raise WritingError("This module doesn't support this type of variable")
 
     def dump_data(self, table_name, insert_dict):
         """
@@ -610,43 +751,69 @@ class Database:
         :param insert_dict: a dictionary filled with columns from the table and the data you want to enter in that column.
         """
 
-        info_dict, encrypted_columns = self.table_info(table_name)
-        if not info_dict:
+        info_dict = {}
+
+        table_info = self.table_info(table_name, return_dict=False)
+        if table_info is None:
             raise WritingError("The table doesn't exist")
+        unique_columns_num = 0
+        there_are_primary_keys = False
+        for info_column in table_info:
+            # Checks that all the coloums that can't be left null are filled
+            info_dict[info_column[ColumnData.name.value]] = info_column
+            if info_column[ColumnData.notnull.value] == 1:
+                if info_column[ColumnData.name.value] not in insert_dict:
+                    raise WritingError("You didn't fill column that can't be null")
+            if info_column[ColumnData.pk.value] > 0 and info_column[ColumnData.type.value].lower() != 'integer':
+                #If the type is "integer", then it means the column's an outo increment
+                # and it doesn't need to be cared of becuase it fills itself.
+                there_are_primary_keys = True
+                if info_column[ColumnData.name.value] in insert_dict:
+                    unique_columns_num += 1
+                    condition = {info_column[ColumnData.name.value]: insert_dict[info_column[ColumnData.name.value]]}
+                    if self.find_specific_record(table_name, condition):
+                        unique_columns_num -= 1
+                else:
+                    raise WritingError("You didn't fill column that is a primary key")
+
+        if not(unique_columns_num == 0 and there_are_primary_keys):
             #raise WritingError("There needs to be at least one unique primary key so the row can be called") I
             #If I add the same thing twice, I won't want ti to crash, but ignore it
         # If "unique_columns_num" is zero, it means that for every value in a primry key already exists in the table
         # and isn't unique.
 
-        first_index = True
-        new_row_code = "INSERT INTO " + table_name + '('
-        new_row_code_values = ' VALUES ('
-        safe_escaping_dict = {}
-        # To prevent level one sql injection I'm won't direcly insert the values to the code,
-        # but safely escape them into the code
-        for column_name, column_data in insert_dict.items():
-            if column_name in info_dict:
-                if first_index:
-                    first_index = False
+            first_index = True
+            new_row_code = "INSERT INTO " + table_name + '('
+            new_row_code_values = ' VALUES ('
+            safe_escaping_dict = {}
+            # To prevent level one sql injection I'm won't direcly insert the values to the code,
+            # but safely escape them into the code
+            for column_name, column_data in insert_dict.items():
+
+                if column_name in info_dict:
+                    if first_index:
+                        first_index = False
+                    else:
+                        new_row_code += ', '
+                        new_row_code_values += ', '
+                    new_row_code += column_name
+                    column_arg = "column_" + column_name
+                    safe_escaping_dict[column_arg] = Database.__type_dump(column_data,
+                                                                          info_dict[column_name][ColumnData.type.value])
+
+                    new_row_code_values += ":" + column_arg
                 else:
-                    new_row_code += ', '
-                    new_row_code_values += ', '
-                new_row_code += column_name
-                column_arg = "column_" + column_name
-                safe_escaping_dict[column_arg] = Database.__type_dump(column_data,
-                                                                      info_dict[column_name][ColumnData.type.value])
+                    raise WritingError("You want to fill a column that doesn't exist")
 
-                new_row_code_values += ":" + column_arg
-            else:
-                raise WritingError("You want to fill a column that doesn't exist")
-
-        new_row_code += ')'
-        new_row_code_values += ')'
-        new_row_code += new_row_code_values + ';'
-        self.execute_sql_code(new_row_code, safe_escaping_dict)
+            new_row_code += ')'
+            new_row_code_values += ')'
+            new_row_code += new_row_code_values
+            new_row_code += ';'
+            # print(new_row_code)
+            self.execute_sql_code(new_row_code, safe_escaping_dict)
 
     def create_function(self, sql_function, sql_function_name):
-        self.db_con.create_function(sql_function_name, sql_function.__code__.co_argcount, sql_function)
+        self.create_function(sql_function_name, sql_function.__code__.co_argcount, sql_function_name)
 
     def close(self):
         print('Connection closed')

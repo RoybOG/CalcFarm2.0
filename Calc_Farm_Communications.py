@@ -1,7 +1,7 @@
 import requests
 import time
 import json
-
+import sys
 TIMEOUT = 5
 
 
@@ -208,6 +208,7 @@ def post_to_route(route_url, data, server_ip, input_list=None, num_of_fails=0):
 
     resp = None
     try:
+        print(sys.getsizeof(data))
         resp = requests.post(url=url_to_server, data={"data": data})
         resp.raise_for_status()
         return resp

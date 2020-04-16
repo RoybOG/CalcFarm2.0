@@ -1,21 +1,21 @@
 from bottle import route, run, post, request, abort, static_file, redirect
+import requests
 import uuid
 import json
 import socket
 import os
 import sys
 import time
-import threading
 import Calcfarm_server_database_connector as Db
-import Calc_Farm_Communications as com
+
 TIMEOUT = 5
-# If the servers don't respond after TIMEOUT seconds, the worker disconncts and tries again.
+#If the servers don't respond after TIMEOUT seconds, the worker disconncts and tries again.
 PORT = 8080
-# The port of the worker_server
+#The port of the worker_server
 MAIN_SERVER_PORT = 6060
-# The port of the main server.
-# The main server should have a different port from the rest of the work server to distinguish
-# itself.
+#The port of the main server.
+#The main server should have a different port from the rest of the work server to distinguish
+#itself.
 ARGS = sys.argv
 if len(ARGS) == 0:
     print("Something is wrong.")
@@ -28,16 +28,15 @@ else:
 
 username = ARGS[0]
 
-Main_Server_IPAddr = "192.168.1.101"
-#Interesting how computers have differnt IPs in different wifis
-Main_Server_url = "http://" + Main_Server_IPAddr + ':' + str(MAIN_SERVER_PORT) + '/communication/work_server'
+Main_Server_IPAddr = "10.0.0.11"
+Main_Server_url = "http://" + Main_Server_IPAddr + ':' + str(MAIN_SERVER_PORT)
 
-global db_lock
-global py_name
+
+global exe_name
 global Task_Conditional
 work_units_amount = 0
 finished_work_units_amount = 0
-WORK_UNIT_LENGTH = 100000
+WORK_UNIT_LENGTH = 1000000
 work_status = Db.WorkStatusNames.no_work.value
 global time_start, time_end
 started_working = False
@@ -52,14 +51,14 @@ HTTPSTATUSCODES = {"Bad Request": 400,
                    "Internal Server Error": 500
                    }
 
-HTTPSTATUSCODESDECODER = {400: "Bad Request",
-                          401: "Unauthorized",
-                          403: "Forbidden",
-                          404: "Not Found",
-                          405: "Not Allowed",
-                          418: "I'm a teapot",
-                          500: "Internal Server Error"
-                          }
+HTTPSTATUSCODESDECODER = {400:"Bad Request",
+                   401: "Unauthorized",
+                   403:"Forbidden",
+                   404:"Not Found",
+                   405:"Not Allowed",
+                   418:"I'm a teapot",
+                   500:"Internal Server Error"
+                   }
 HTTPSTATUSMESSAGES = {"Bad Request": "The server did not recognise the command",
                       "Unauthorized": "The server doesn't recognise you.",
                       "Forbidden": "You aren't qualified to get access to this service",
@@ -85,26 +84,25 @@ def create_folder(folder_dir):
         os.makedirs(folder_path)
 
 
-py_folder = 'tasks'
+exe_folder = 'tasks'
 main_directory = os.getcwd().replace('\\', '/')
-py_dir = main_directory + '/' + py_folder
+exe_dir = main_directory + '/' + exe_folder
 # The folder with all of the website files is saved in the current working directory(cwd),
 # the directory where the ".py" file of this program is.
-create_folder(py_dir)
+create_folder(exe_dir)
 
 
-# Send Functions:
+#Send Functions:
 
 def connect_to_route(route_url=None, input_list=None):
-
     """
-    This function sends 'get' request to one of the routes on the main server.
-    :param route_url: a string url of the route that is inside the "work_server" route in the Main Server.
+    This function sends 'get' request to one of the routes on the main server
+    :param route_url: a string of the url of the route
     :param input_list: a list of all the inputs to the route(the number of inputs need to match the number
     of the route's arguments)
-    :return: the output from the server.
+    :return: the output from the server- a JSON file the was converted to a dictionary.
+    (all the clients to a server communicate to it using JSON files as a part of the protocol)
     """
-
     if input_list is None:
         input_list = []
 
@@ -113,49 +111,107 @@ def connect_to_route(route_url=None, input_list=None):
     if route_url is None:
         route_url = ''
 
-    return com.connect_to_route(route_url, Main_Server_url, input_list)
+    url_to_server = Main_Server_url + '/communication/work_server/' + route_url
+    #The server port has its own slashes and they will be removed by the function and make an invalid url
+    for server_input in input_list:
+        if len(str(server_input)) > 0:
+            url_to_server = url_to_server + '/' + str(server_input)
+
+    req = None
+    try:
+        req = requests.get(url=url_to_server, timeout=TIMEOUT)
+        # if 'text' in str(req.headers.get('content-type').lower())
+        # or 'html' in str(req.headers.get('content-type').lower()):
+        #print(req.content)
+
+        req.raise_for_status()
+        return req
+    except requests.exceptions.HTTPError:
+        http_name = HTTPSTATUSCODESDECODER[req.status_code]
+        raise Db.WorkerServerError("HTTP error of " + str(req.status_code) + "- " + http_name + ': \n' +
+                                   HTTPSTATUSMESSAGES[http_name])
+    except requests.exceptions.ConnectTimeout:
+        raise Db.WorkerServerError("The main server didn't respond")
+    except requests.exceptions.RequestException as e:
+        raise Db.WorkerServerError('There was an error in communication: ' + str(e))
 
 
-def send_to_server(route_url, data, input_list=None):
+def send_to_server(route_url, data_dict, input_list=None):
     """
-     This function sends 'post' request to one of the routes on the Main Server
-    :param route_url: a string url of the route that is inside the "work_server" route in the Main Server.
-    :param data_dict: the data this work_server wants to send to the server
+     This function sends 'post' request to one of the routes on the server
+    :param route_url: a string of the url of the route
+    :param data_dict: the data that the worker wants to send to the server in the form of a dictionary
+    that is too big to be sent normally as an argument.
     :param input_list: a list of all the inputs to the route(the number of inputs need to match the number
     of the route's arguments)
-    :return: the output from the route(if there is), after it got the post.
-     route.
+    :return: the output from the route in the form of a dictionary that was a JSON file
     """
+    json_to_send = package_data(data_dict)
 
     if input_list is None:
         input_list = []
 
     input_list = [username] + input_list
 
-    return com.post_to_route(route_url,data,Main_Server_url,input_list=input_list)
+    route_url = handle_path(route_url)
+
+    url_to_server = Main_Server_url + '/communication/work_server/' + route_url
+    dir_args = [] + input_list
+    for worker_input in dir_args:
+        if len(str(worker_input)) > 0:
+            url_to_server = url_to_server + '/' + str(worker_input)
+
+    req = None
+    try:
+        req = requests.post(url=url_to_server, data={'json': json_to_send})
+        req.raise_for_status()
+        return req
+    except requests.exceptions.HTTPError:
+        print("url {} cuased an error".format(url_to_server))
+        print("HTTP error of " + str(req.status_code) + "- " + HTTPSTATUSCODESDECODER[req.status_code]
+                          + ': \n' + HTTPSTATUSMESSAGES[HTTPSTATUSCODESDECODER[req.status_code]])
+    except requests.exceptions.ConnectTimeout:
+        print("The server didn't respond")
+    except requests.exceptions.RequestException as e:
+        print('There was an error in communication: ' + str(e))
 
 
-def get_file(requested_py_name):
+def recieve_data_from_server(route_url=None, input_list=None):
     """
-    In this function, the work server gets from the main server the python file of the task it's working on.
-    :param requested_py_name: the name of the requested .py file.
+    The work server gets data from a route on the main server as a JSON file according to it protocol:
+    :param route_url: the url where the wanted route is
+    :param input_list: a list of all the inputs to the route(the number of inputs need to match the number
+    of the route's arguments)
+    :return: the output from the route in the form of a dictionary that was a JSON file
+
+    """
+    raw_data = connect_to_route(route_url, input_list)
+    if raw_data is None:
+        return None
+    else:
+        return raw_data.json()
+
+
+def get_file(requested_exe_name):
+    """
+    In this function, the worker gets he exe.file
     :return: A unique ID of a hexadecimal string that the worker will use to identify itself to the server.
     """
 
-    file_data = connect_to_route("getpyfile", input_list=[requested_py_name])
-    if not requested_py_name.endswith('.py'):
-        requested_py_name = requested_py_name + '.py'
-    download_folder_dir = handle_path(main_directory + '/' + py_folder + '/' + requested_py_name)
-    if not os.path.isdir(main_directory + '/' + py_folder):
-        create_folder(py_folder)
+    file_data = connect_to_route("getexefile", input_list=[requested_exe_name])
+    if not requested_exe_name.endswith('.exe'):
+        requested_exe_name = requested_exe_name + '.exe'
+    download_folder_dir = handle_path(main_directory + '/' + exe_folder + '/' + requested_exe_name)
+    if not os.path.isdir(main_directory + '/' + exe_folder):
+        create_folder(exe_folder)
     try:
         with open(download_folder_dir, 'wb') as file_creator:
-            file_creator.write(file_data)
+            file_creator.write(file_data.content)
     except OSError:
-        print("The program couldn't recreate the .py file")
+        print("The program couldn't recreate the .exe file")
 
 
-# Output funcitons
+#Output funcitons
 
 
 def task_divider(first_num, last_num):
@@ -168,33 +224,27 @@ def task_divider(first_num, last_num):
     num_amount = last_num - first_num + 1
     index = first_num
     reminder = num_amount % WORK_UNIT_LENGTH
-    global db_lock
     global work_units
     global work_units_amount
     global work_status
-    print("loading")
-    work_unit_time1 = time.time()
-    with db_lock:
-        while index - 1 + WORK_UNIT_LENGTH <= last_num - reminder:
-            work_unit_data = {
-                "first_num": index,
-                "last_num": index - 1 + WORK_UNIT_LENGTH,
-            }
-            Db.insert_work_unit(work_unit_data)
-            work_units_amount = work_units_amount + 1
-            index = index + WORK_UNIT_LENGTH
+    while index - 1 + WORK_UNIT_LENGTH <= last_num - reminder:
+        work_unit_data = {
+            "first_num": index,
+            "last_num": index - 1 + WORK_UNIT_LENGTH,
+        }
+        Db.insert_work_unit(work_unit_data)
+        work_units_amount = work_units_amount + 1
+        index = index + WORK_UNIT_LENGTH
 
-        if reminder > 0:
-            work_unit_data = {
-                "first_num": last_num - reminder + 1,
-                "last_num": last_num
-            }
-            Db.insert_work_unit(work_unit_data)
-            work_units_amount = work_units_amount + 1
-        work_unit_total_time = time.time() - work_unit_time1
-        print("finished in {} seconds".format(work_unit_total_time))
-        work_status = Db.WorkStatusNames.has_work.value
-        # print(work_units)
+    if reminder > 0:
+        work_unit_data = {
+            "first_num": last_num - reminder + 1,
+            "last_num": last_num
+        }
+        Db.insert_work_unit(work_unit_data)
+        work_units_amount = work_units_amount + 1
+    work_status = Db.WorkStatusNames.has_work.value
+    #print(work_units)
 
 
 def recieve_information_from_client():
@@ -203,7 +253,7 @@ def recieve_information_from_client():
     :return: the data the client sent in the POST request(as a part of their protocol, the client sends its data
     in the "json" header, where there is its data in the form of a json file) in the form of a dictionary.
     """
-    client_data = request.forms.get('data')
+    client_data = request.forms.get('json')
     client_data_dict = json.loads(client_data)
     return client_data_dict
 
@@ -231,7 +281,7 @@ def read_file(root, file_name, file_type='t'):
     and reads its content depending on it's type.
 
     :param root: the folder in which the file is: if it is 'website', then it's a html file to the website
-    and if it is the "py_folder" then it's the python file.
+    and if it is 'exefile' then it's the executable file.
 
     :param file_name: the name of the text file(including the file type at the end, which in this case is '.txt')
     that has the html of the wanted page.
@@ -244,6 +294,8 @@ def read_file(root, file_name, file_type='t'):
     page_dir = handle_path(main_directory + '/' + root + '/' + file_name)
 
     try:
+        # if type != 'b' and type != 't':
+            # raise
         with open(page_dir, 'r' + file_type) as page_reader:
             return str(page_reader.read())
     except FileNotFoundError:
@@ -291,31 +343,35 @@ def package_data(data_dict):
     return json.dumps(data_dict)
 
 
+#@route('communication/startworking/<firstnum>/<lastnum>', mathod='POST')
 def startworking():
     """
-    The first thing a work server does is ask the main server for tasks to work on.
-    If there is, it will get all the details of that task:
-    its name, its python file, its first number and last number in its total range.
-    It will
+    When the user will enter the executable file, the first number and last number in the range, the server
+    will first devide
+    :param task_file_name: the name of the exe file the program wants to run on all the numbers in the range.
+    The heart of the task(including the ending of '.exe').
+    :param first_num:The smallest number in the desired number range, the first number.
+    :param last_num:The biggest number in the desired number range, the first number.
     """
-    # In the future have the manager program run this all the time.
-    global py_name
+    #In the future have the manager program or from the website implement this arguments to a route
+    #the program will download the file from the website
+    global exe_name
     global Task_Conditional
-    global db_lock
     task_data = None
     while task_data is None:
-        task_data = connect_to_route("get_task")
+        task_data = recieve_data_from_server("get_task")
         if task_data is None:
             time.sleep(5)
         else:
-            py_name = task_data["exe_name"]
-            print('Working on the task "{}"'.format(py_name))
-            get_file(py_name)
+            exe_name = task_data["exe_name"]
+            print('Working on the task "{}"'.format(exe_name))
+            get_file(exe_name)
             Task_Conditional = task_data["Task_conditional"]
-            db_lock = threading.lock()
-
+            print("loading")
+            t1 = time.time()
             task_divider(task_data["first_num"], task_data["last_num"])
-
+            t2 = time.time()
+            print("ready {}".format(t2-t1))
 
 @route('/')
 def lol():
@@ -364,18 +420,18 @@ def getworkunit(worker_id):
                 print("Starting to work!")
                 time_start = time.time()
                 started_working = True
-                # It counts it's
+                #It counts it's
             print(str(saved_work_unit["work_unit_id"]) + " " + str(saved_work_unit))
             Db.assign_work_unit(saved_work_unit["work_unit_id"], worker_id)
             return saved_work_unit
 
-    return package_data({"fail_message": work_status})
 
+
+    return package_data({"fail_message": work_status})
 
 @route('/lol')
 def a():
     return "lol"
-
 
 @post('/communication/worker/update/<worker_id>')
 def update(worker_id):
@@ -393,7 +449,7 @@ def update(worker_id):
         work_unit_id = worker_work_unit['work_unit_id']
 
         work_unit_results = worker_log_dict['results']
-        # if work_units[data_dict['status']] == WorkUnitStatusNames.in_progress.value:
+        #if work_units[data_dict['status']] == WorkUnitStatusNames.in_progress.value:
         if worker_work_unit["work_unit_status"] == Db.WorkUnitStatusNames.in_progress.value:
             if worker_id == worker_work_unit['worker_id']:
                 Db.update_results(work_unit_id, work_unit_results)
@@ -402,11 +458,11 @@ def update(worker_id):
                     time_end = time.time()
                     work_status = Db.WorkStatusNames.finished_work.value
                     results = Db.collect_results()
-                    send_to_server('get_results', {"results": results})
+                    send_to_server('get_results',{"results": results})
                     print(results)
                     print("Made in {} seconds".format(time_end - time_start))
-                    # sys.exit(1)
-                    # You need  to give time for all the workers to realize their work is done and shut down
+                    #sys.exit(1)
+                    #You need  to give time for all the workers to realize their work is done and shut down
             else:
                 raise_http_error("I'm a teapot")
         else:
@@ -416,7 +472,6 @@ def update(worker_id):
     elif worker_log_dict['status'] == -1:
         Db.free_work_unit_from_worker(worker_id)
 
-
 @route('/communication/main_server/get_stats')
 def get_stats():
     """
@@ -424,51 +479,58 @@ def get_stats():
     :return:
     """
     stats = {
-        "progress_precent": 100.0 * finished_work_units_amount / work_units_amount,
+        "progress_precent": 100.0*finished_work_units_amount/work_units_amount,
         "results": None if work_status == Db.WorkStatusNames.finished_work.value else Db.collect_results(),
-        # If it's already finished, then all the results were already sent to the main server.
-    }
+        #If it's already finished, then all the results were already sent to the main server.
+         }
     return stats
-
 
 @route('/communication/main_server/stop_working')
 def stop_working():
     sys.exit()
 
 
-@route('/communication/worker/getpyfile/<worker_id>/<requested_py_name>')
-def getpyfile(worker_id, requested_py_name):
+@route('/communication/worker/getexefile/<worker_id>/<requested_exe_name>')
+def getexefile(worker_id, requested_exe_name):
     worker_data = identify(worker_id)
-    file_dir = handle_path(main_directory + '/' + py_folder)
-    if not requested_py_name.endswith('.py'):
-        requested_py_name = requested_py_name + '.py'
+    file_dir = handle_path(main_directory + '/' + exe_folder)
+    if not requested_exe_name.endswith('.exe'):
+        requested_exe_name = requested_exe_name + '.exe'
 
-    # data_to_worker = {'file': static_file(filename, root=file_dir, download=filename)}
-    # return package_data(data_to_worker)
-    if not os.path.isfile(handle_path(file_dir + '/' + requested_py_name)):
+    #data_to_worker = {'file': static_file(filename, root=file_dir, download=filename)}
+    #return package_data(data_to_worker)
+    if not os.path.isfile(handle_path(file_dir + '/' + requested_exe_name)):
         print("The server didn't find the file.")
         raise_http_error("Not Found")
-    return static_file(requested_py_name, root=file_dir, download=requested_py_name)
+    return static_file(requested_exe_name, root=file_dir, download=requested_exe_name)
 
+
+"""
+def getexefile(worker_id, filename):
+    identify(worker_id)
+    code = read_file(filename, 'exefile')
+    code_to_send = {'code': code}
+    return package_data(code_to_send)
+"""
 hostname = socket.gethostname()
 IPAddr = socket.gethostbyname(hostname)
 print("Server {} of IP {} is ready to go!".format(hostname, IPAddr))
 
 print("http://" + IPAddr + ':' + str(PORT))
-# print(connect_to_route('lol').content)
-results = [1, 2, 3, 4, 5, 6, 7, 8, 9]
-# send_to_server('get_results',{"results":results})
+#print(connect_to_route('lol').content)
+results= [1,2,3,4,5,6,7,8,9]
+#send_to_server('get_results',{"results":results})
 startworking()
 run(host='0.0.0.0', port=PORT)
-# run(host='localhost', port=PORT)
+#run(host='localhost', port=PORT)
 
 """
 @route('/communication/worker/signup/<comupter_id>')
 def signup(comupter_id):
-
+    
     The worker who communicated to this server for the first time, will get
     :return:
-
+    
     identify(comupter_id , computers)
     new_worker_id = str(id_generator())
     global workers

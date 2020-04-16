@@ -1,6 +1,4 @@
 # from bottle import route, run, template, request
-import requests
-import json
 import sys
 import subprocess
 import os
@@ -80,7 +78,7 @@ TIMEOUT = 5
 number_of_work_units = 0
 sum = 0.0
 
-Main_Server_IP = "192.168.1.104"
+Main_Server_IP = "192.168.1.101"
 global time_start, time_end
 #The website needs to save the IP of the computer that the server is being downloaded on
 # and the website will input it to every worker
@@ -93,15 +91,6 @@ class WorkerError(Exception):
     When it is raise, it will send a negative message to the
     """
     pass
-
-
-def package_data(data_dict):
-    """
-    This function packages data to a Json object to send to the server.
-    :param data_dict: dictionary that contains data to send to the client
-    :return: a json object version of the data
-    """
-    return json.dumps(data_dict)
 
 
 def send_to_work_server(id, work_server_ip, route_url, data, input_list=None):
@@ -325,7 +314,7 @@ py_folder = 'pyfile'
 #    task recieve_data_from_server(route_url, input_list=None)
 
 
-def worker_task_calc():
+def task_calc():
     id = None
     try:
         task_py_name, work_server_ip, id = worker_sign_up()
@@ -339,7 +328,7 @@ def worker_task_calc():
                 if work_unit['fail_message'] == ServerWorkStatusNames.finish_work.value:
                     work_status = WorkerWorkStatusNames.finished_work.value
                 elif work_unit['fail_message'] == ServerWorkStatusNames.no_work:
-                    time.sleep(5)
+                    time.sleep(7)
             else:
                 print("working on work unit no' " + str(work_unit['work_unit_id']) + " between the numbers "
                       + str(work_unit['first_num']) + ':' + str(work_unit['last_num']))
@@ -391,10 +380,15 @@ def worker_task_calc():
         print(message)
     """
     #Check how the worker when an excetion raissed ascapes the while loop and how the server cant tell him that he finished it's work
+def worker():
+    while True:
+        task_calc()
+
+
 if __name__ == "__main__":
     #worker_task_calc()
     with concurrent.futures.ThreadPoolExecutor() as executer:
-        results = [executer.submit(worker_task_calc) for _ in range(os.cpu_count())]
+        results = [executer.submit(task_calc) for _ in range(os.cpu_count())]
 
 
   

@@ -1,4 +1,4 @@
-import Calc_farm_database_analyser as Db
+import CalcFarm_Database_Analyser_2 as Db
 import enum
 
 
@@ -160,10 +160,10 @@ def assign_work_unit(work_unit_id, worker_id):
     """
     server_database.update_records("work_units",
                                    {"worker_id": worker_id, "work_unit_status": WorkUnitStatusNames.in_progress.value},
-                                   condition="work_unit_id=$?", code_args=[work_unit_id])
+                                   condition="work_unit_id=?", code_args=[work_unit_id])
 
     server_database.update_records("workers",{"worker_status": WorkerStatusNames.working.value},
-                                   condition="worker_id=$?", code_args=[worker_id])
+                                   condition="worker_id=?", code_args=[worker_id])
 
 
 def free_work_unit(work_unit_id):
@@ -175,11 +175,11 @@ def free_work_unit(work_unit_id):
     work_unit = get_work_unit(work_unit_id)
     server_database.update_records("work_units",
                                    {"worker_id": None, "work_unit_status": WorkUnitStatusNames.untouched.value},
-                                   condition="work_unit_id=$?", code_args=[work_unit_id])
+                                   condition="work_unit_id=?", code_args=[work_unit_id])
 
     worker_id = work_unit['worker_id']
     server_database.update_records("workers", {"worker_status": WorkerStatusNames.waiting.value},
-                                   condition="worker_id=$?", code_args=[worker_id])
+                                   condition="worker_id=?", code_args=[worker_id])
 
 def free_work_unit_from_worker(worker_id):
     """
@@ -191,15 +191,15 @@ def free_work_unit_from_worker(worker_id):
     if work_unit is not None:
         server_database.update_records("work_units",
                                    {"worker_id": None, "work_unit_status": WorkUnitStatusNames.untouched.value},
-                                   condition="work_unit_id=$?", code_args=[work_unit["work_unit_id"]])
+                                   condition="work_unit_id=?", code_args=[work_unit["work_unit_id"]])
 
         server_database.update_records("workers", {"worker_status": WorkerStatusNames.waiting.value},
-                                   condition="worker_id=$?", code_args=[worker_id])
+                                   condition="worker_id=?", code_args=[worker_id])
 
 
 def remove_worker(worker_id):
     free_work_unit_from_worker(worker_id)
-    server_database.delete_records("workers","worker_id = $?", [worker_id])
+    server_database.delete_records("workers","worker_id = ?", [worker_id])
 
 
 def update_results(work_unit_id, results):
@@ -218,9 +218,9 @@ def update_results(work_unit_id, results):
     }
 
     server_database.dump_data("work_unit_results", work_unit_data)
-    server_database.delete_records("work_units", "work_unit_id=$?", con_args=[work_unit_id])
+    server_database.delete_records("work_units", "work_unit_id=?", con_args=[work_unit_id])
     server_database.update_records("workers", {"worker_status": WorkerStatusNames.waiting.value},
-                                   condition="worker_id=$?", code_args=[work_unit["worker_id"]])
+                                   condition="worker_id=?", code_args=[work_unit["worker_id"]])
 
 
 

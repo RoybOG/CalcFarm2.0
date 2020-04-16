@@ -1,2 +1,2 @@
-# CalcFarm2.0
-This is a rewrite I did after my first draft(Which is saved in a seperate repository).
+# CalcFarm
+פרוייקט הגמר שלי במגמת סייבר 2020

@@ -1,4 +1,4 @@
-import Calc_farm_database_analyser as Db
+import CalcFarm_Database_Analyser_2 as Db
 import os
 import enum
 import hashlib
@@ -154,17 +154,25 @@ def __encode_importent_info(info):
 
 
 def create_session(sid, username, prev_sid=None):
+    """
+    Writes a session in the "sessions" data table.
+    :param sid: a random generated id the server created for the session.
+    :param username: The name of the user that is log in this session.
+    :param prev_sid: If the use is loged in another computer, then it will delleet
+    :return:
+    """
     if prev_sid:
-        database_handler.delete_records("sessions", "sid=?", [repr(prev_sid)])
+        database_handler.delete_records("sessions", "sid=?", [prev_sid])
 
     if database_handler.find_specific_record("sessions", {"username": username}):
-        database_handler.delete_records("sessions", "username=?", [repr(username)])
+        database_handler.delete_records("sessions", "username=?", [username])
 
     database_handler.dump_data('sessions', {"sid": sid, "username": username})
 
 
 def delete_session(sid):
-    database_handler.delete_records("sessions", "sid=?", [repr(sid)])
+    database_handler.delete_records("sessions", "sid=?", [sid])
+
 
 def find_user(username, return_data=False):
     return database_handler.find_specific_record("online_data", {"user_name": username},
@@ -201,16 +209,17 @@ def insert_task(user_name, task_data):
             task_data["user_name"] = user_name
             there_are_normal_tasks = database_handler.check_for_record("Tasks",
                                                             condition="user_name=? and work_force_percentage is null",
-                                                                       check_args=[repr(user_name)])
+                                                                       check_args=[user_name])
 
             there_are_percent_tasks = database_handler.check_for_record("Tasks",
                                                         condition="user_name=? and work_force_percentage is not null",
-                                                                        check_args=[repr(user_name)])
+                                                                        check_args=[user_name])
 
             if there_are_percent_tasks and "work_force_percentage" in task_data:
-                total_percent = database_handler.collect_sql_quarry_result(
-                    "select sum(work_force_percentage) from Tasks where user_name=? and work_force_percentage is not null",
-                    [repr(user_name)])[0] + task_data["work_force_percentage"]
+                total_percent = database_handler.collect_sql_quarry_result("select sum(work_force_percentage)"
+                                                                           " from Tasks where user_name=? "
+                                                                           "and work_force_percentage is not null",
+                    [user_name])[0] + task_data["work_force_percentage"]
                 if total_percent > 100:
                     raise MainServerError("The percentages add to more then the whole")
                 elif total_percent == 100 and there_are_normal_tasks:
@@ -242,7 +251,7 @@ def start_working_on_a_task(user_name, task_name):
 def cancel_working_on_task(user_name, task_name):
     if database_handler.find_specific_record("current_tasks",{"Task_name": task_name, "user_name": user_name}):
         database_handler.delete_records("current_tasks", "Task_name=:task_name and user_name=:user_name",
-                                        con_args={"task_name": repr(task_name), "user_name": repr(user_name)})
+                                        con_args={"task_name": task_name, "user_name": user_name})
 
 
 def find_task(task_name, user_name, return_task_data=False):
@@ -254,7 +263,7 @@ def find_task(task_name, user_name, return_task_data=False):
 
 def get_all_tasks_by_user(user_name):
     tasks_row = database_handler.load_data("Tasks", condition="user_name=?", select_columns=["Task_name"], select_args=
-    [repr(user_name)], filer_unique_row=False)
+    [user_name], filer_unique_row=False)
     if not tasks_row:
         return None
 
@@ -263,7 +272,7 @@ def get_all_tasks_by_user(user_name):
 
 def get_all_running_tasks_by_user(user_name):
     tasks_row = database_handler.load_data("current_tasks", condition="user_name=?",
-                                           select_args=[repr(user_name)], filer_unique_row=False)
+                                           select_args=[user_name], filer_unique_row=False)
     if not tasks_row:
         return None
 
@@ -298,26 +307,27 @@ def get_server_ip(task_name, username):
     else:
         return task_ip["server_ip"]
 
+
 def assign_task(user_name, task_name, work_server_ip):
     """
-    Asigns a task to an available work_server_ip
-    #get the user name from the wor k server that has the arguments of the user name
-    and the name of the task
-    :param task_name:
-    :param user_name:
-    :param work_server_ip:
-    :return:
+    Assigns a task to an available work server.
+    :param task_name: The name of a task that is waiting to be calculated by a work server.
+    :param user_name: The name of the user that created the task and ran the work server.
+    :param work_server_ip: The IP of the avaliable work server that will work on this task.
+    With this IP, other workers that are assigned to this task will connect to this work server.
     """
 
     database_handler.update_records("current_tasks",
                                    {"server_ip": work_server_ip, "Task_status": TaskStatusNames.in_progress.value},
-                                   condition="Task_name=$? and user_name=$?", code_args=[task_name, user_name])
+                                   condition="Task_name=:Task_name and user_name=:user_name",
+                                    code_args={"Task_name": task_name, "user_name": user_name})
 
 
 def set_results(user_name, work_server_ip, task_results):
     database_handler.update_records("current_tasks",
                                     {"Task_results": task_results, "Task_status": TaskStatusNames.finished.value},
-                                    condition="server_ip=$? and user_name=$?", code_args=[work_server_ip, user_name])
+                                    condition="server_ip=:server_ip and user_name=:user_name",
+                                    code_args={"server_ip": work_server_ip, "user_name": user_name})
 
 def get_results(user_name, task_name):
     results= database_handler.find_specific_record("current_tasks",
@@ -339,20 +349,15 @@ def free_task(task_name, user_name):
     database_handler.update_records("current_tasks",
                                     {"server_ip": None,
                                      "Task_status": TaskStatusNames.untouched.value},
-                                    condition="Task_name=$? and user_name=$?", code_args=[task_name, user_name])
-
-"""
-def get_number_of_workers(user_name):
-    return database_handler.collect_sql_quarry_result(
-        "select sum(Task_Connected_workers) from current_tasks where user_name=?", [repr(user_name)])[0]
-"""
+                                    condition = "Task_name=:Task_name and user_name=:user_name",
+                                    code_args = {"Task_name": task_name, "user_name": user_name})
 
 
 def assign_worker(user_name):
     priority_current_tasks = database_handler.load_data("current_tasks",
                                                  condition="user_name=? and work_force_percentage is not null"
                                                            " and server_ip is not null",
-                                                 select_args=[repr(user_name)],
+                                                 select_args=[user_name],
                                                  order_by_columns=["work_force_percentage"], order_type="DESC",
                                                  filer_unique_row=False)
 
@@ -361,7 +366,7 @@ def assign_worker(user_name):
     normal_current_tasks = database_handler.load_data("current_tasks",
                                                  condition="user_name=? and work_force_percentage is null"
                                                            " and server_ip is not null",
-                                                 select_args=[repr(user_name)],
+                                                 select_args=[user_name],
                                                  order_by_columns=["Task_Connected_workers"],
                                                  filer_unique_row=False)
 
@@ -371,15 +376,14 @@ def assign_worker(user_name):
     if priority_current_tasks is not None:
         #print(priority_current_tasks)
         total_work_force = database_handler.collect_sql_quarry_result(
-            "select sum(Task_Connected_workers) from current_tasks where user_name=?", [repr(user_name)])[0] + 1
+            "select sum(Task_Connected_workers) from current_tasks where user_name=?", [user_name])[0] + 1
         for task in priority_current_tasks:
             percent_from_whole = math.ceil(total_work_force*(task["work_force_percentage"]/100.0))
             if task["Task_Connected_workers"] < percent_from_whole:
                 database_handler.update_records("current_tasks",
                                                 {"Task_Connected_workers": task["Task_Connected_workers"] + 1},
-                                                condition="Task_name=$? and user_name=$?",
-                                                code_args=[task["Task_name"],
-                                                           user_name])
+                                                condition="Task_name=:Task_name and user_name=:user_name",
+                                                code_args={"Task_name": task["Task_name"], "user_name": user_name})
 
 
                 worker_task = find_task(task["Task_name"], user_name, return_task_data=True)
@@ -399,8 +403,8 @@ def assign_worker(user_name):
     assigned_task = choice(minimum_work_force_tasks)
     database_handler.update_records("current_tasks",
                                     {"Task_Connected_workers": assigned_task["Task_Connected_workers"] + 1},
-                                    condition="Task_name=$? and user_name=$?", code_args=[assigned_task["Task_name"],
-                                                                                          user_name])
+                                    condition="Task_name= :Task_name and user_name= :user_name",
+                                    code_args={"Task_name": assigned_task["Task_name"], "user_name": user_name})
     worker_task = find_task(assigned_task["Task_name"], user_name, return_task_data=True)
     worker_task["server_ip"] = assigned_task["server_ip"]
     return worker_task
@@ -422,12 +426,6 @@ CREATE TABLE rwr
 
 database_handler.create_table(code)
 test_data = {'name': 'Gimmie'}
-
-
-#user_data = {'condition':}
-#print(database_handler.collect_sql_quarry_result("select * from table_name where column_2=?;", (5,)))
-#print(database_handler.collect_sql_quarry_result("select * from table_name where :condition;", user_data))
-#print(database_handler.check_for_record("table_name",'column_1=1'))
 
 """
 insert_user('a', 'b')
@@ -461,8 +459,10 @@ def main():
                       "work_force_percentage":50})
     insert_task('c', {"Task_name": "task6", "first_num": 1, "last_num": 10000, "exe_name": "gold",
                       "work_force_percentage":50})
+    start_working_on_a_task('c', "task5")
     assign_task("c", "task5", "10.0.0.7")
     start_working_on_a_task('Default_UserName', "prime_range")
+
 #insert_task('a', {"Task_name": "task4", "first_num": 1, "last_num": 10000, "exe_name": "gold",
 #                  "work_force_percentage":15})
 
