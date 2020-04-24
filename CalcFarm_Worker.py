@@ -6,7 +6,7 @@ import enum
 import time
 import multiprocessing
 import concurrent.futures
-import Calc_Farm_Communications as com
+from Calc_Farm_Essential import*
 
 ARGS = sys.argv
 if len(ARGS) == 0:
@@ -78,7 +78,7 @@ TIMEOUT = 5
 number_of_work_units = 0
 sum = 0.0
 
-Main_Server_IP = "192.168.1.101"
+Main_Server_IP = "10.0.0.11"
 global time_start, time_end
 #The website needs to save the IP of the computer that the server is being downloaded on
 # and the website will input it to every worker
@@ -111,7 +111,7 @@ def send_to_work_server(id, work_server_ip, route_url, data, input_list=None):
         input_list = []
 
     input_list = [id] + input_list
-    return com.post_to_route(route_url, data, work_server_ip , input_list=input_list)
+    return post_to_route(route_url, data, work_server_ip , input_list=input_list)
 
 
 def connect_to_work_server(id, work_server_ip, route_url, input_list=None):
@@ -130,7 +130,7 @@ def connect_to_work_server(id, work_server_ip, route_url, input_list=None):
         input_list = []
     input_list = [id] + input_list
 
-    return com.connect_to_route(route_url, work_server_ip, input_list)
+    return connect_to_route(route_url, work_server_ip, input_list)
 
 
 def create_folder(folder_name):
@@ -146,16 +146,16 @@ def worker_sign_up():
     :return: The name of the task. the work server's IP adress and
     A unique ID of a hexadecimal string that the worker will use to identify itself to the server as a tuple.
     """
-    task = com.connect_to_route("get_task", MainServerURL, [username])["task"]
+    task = connect_to_route("get_task", MainServerURL, [username])["task"]
     while not task:
         time.sleep(5)
-        task = com.connect_to_route("get_task", MainServerURL, [username])["task"]
+        task = connect_to_route("get_task", MainServerURL, [username])["task"]
 
     task_py_name = task["exe_name"]
     work_server_ip = task["server_ip"]
     work_server_url = "http://" + work_server_ip + ':' + str(PORT) + "/communication/worker"
     #This is the url of the work-server that works on this task.
-    return task_py_name, work_server_url, com.connect_to_route("signup", server_ip=work_server_url)['id']
+    return task_py_name, work_server_url, connect_to_route("signup", server_ip=work_server_url)['id']
 
 
 def get_file(id, work_server_ip, py_name):
@@ -182,7 +182,8 @@ def get_file(id, work_server_ip, py_name):
         print("The program couldn't recreate the .py file")
 
 
-def python_executor(id, work_server_ip,  script_name, args=None, num_of_fails=0):
+@Repeat
+def python_executor(id, work_server_ip,  script_name, args=None):
     """
     This function will execute the python file.
     There are 3 data streams to the program called 'standard streams' that the program communicates with
@@ -231,14 +232,11 @@ def python_executor(id, work_server_ip,  script_name, args=None, num_of_fails=0)
                 raise WorkUnitError(arguments=args,
                                     error_message=error,
                                     output=output)
-            num_of_fails += 1
-            print("Failed {} times. trying again...".format(num_of_fails))
-            if num_of_fails == 3:
-                raise WorkUnitError(arguments=args,
+
+            inner_error = WorkUnitError(arguments=args,
                                     error_message="Couldn't run the python file for an unknown reason.",
                                     output=output)
-            else:
-                return python_executor(id, work_server_ip, script_name, args=args, num_of_fails=num_of_fails)
+            raise RepeatError(inner_error)
         try:
 
             output = eval(output)
@@ -252,15 +250,10 @@ def python_executor(id, work_server_ip,  script_name, args=None, num_of_fails=0)
         # output, error = Popen.comm
         print("There was a system error: \n" + str(e))
         os.remove(file_dir)
-        num_of_fails += 1
-        print("Failed {} times. trying again...".format(num_of_fails))
-        if num_of_fails == 3:
-            raise WorkUnitError(arguments=args,
+        inner_error = WorkUnitError(arguments=args,
                                 error_message=str(e),
                                 output=output)
-        else:
-            return python_executor(id, work_server_ip, script_name, args=args, num_of_fails=num_of_fails)
-
+        raise RepeatError(inner_error)
         # If the program couldn't run the script, it wasn't downloaded fully or is corrupted
         # (Assuming that there is no bug in the script code that crashed it).
         # The program will try and reload the file to fix the issue.
@@ -327,7 +320,7 @@ def task_calc():
             if 'fail_message' in work_unit:
                 if work_unit['fail_message'] == ServerWorkStatusNames.finish_work.value:
                     work_status = WorkerWorkStatusNames.finished_work.value
-                elif work_unit['fail_message'] == ServerWorkStatusNames.no_work:
+                elif work_unit['fail_message'] == ServerWorkStatusNames.no_work.value:
                     time.sleep(7)
             else:
                 print("working on work unit no' " + str(work_unit['work_unit_id']) + " between the numbers "
@@ -360,7 +353,7 @@ def task_calc():
 
 
 
-    except com.CommunicationError as e:
+    except CommunicationError as e:
         print("As much as the client tried, it couldn't solve a connection error.")
         print("Final error:" + str(e))
     except WorkerError as e:
@@ -386,9 +379,9 @@ def worker():
 
 
 if __name__ == "__main__":
-    #worker_task_calc()
-    with concurrent.futures.ThreadPoolExecutor() as executer:
-        results = [executer.submit(task_calc) for _ in range(os.cpu_count())]
+    task_calc()
+    #with concurrent.futures.ThreadPoolExecutor() as executer:
+    #    results = [executer.submit(task_calc) for _ in range(os.cpu_count())]
 
 
   

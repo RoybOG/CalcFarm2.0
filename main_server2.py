@@ -7,7 +7,7 @@ import secrets
 import uuid
 import time
 import Calc_farm_main_server_db_connector as Db
-import Calc_Farm_Communications as Com
+from Calc_Farm_Essential import *
 from datetime import datetime
 
 PORT = 6060
@@ -31,11 +31,7 @@ def raise_http_error(status_name, status_details=None):
         abort(Db.HTTPSTATUSCODES[status_name], status_message)
 
 
-def handle_path(path):
-    valid_path = '/'.join(list(filter(lambda x: len(x) > 0, path.replace('\\', '/').split("/"))))
-    # print(valid_path)
-    # print(os.path.isfile(valid_path))
-    return valid_path
+
 
 
 def package_data(data_dict):
@@ -45,18 +41,6 @@ def package_data(data_dict):
     :return: a json file of the data
     """
     return json.dumps(data_dict)
-
-
-def recieve_information_from_work_server():
-    """
-    This function receives a 'POST' request method from a work server and get it's data
-    :return: the data the work server sent in the POST request(as a part of their protocol, the work server
-    sends its data in the "json" header,
-    where there is its data in the form of a json file) in the form of a dictionary.
-    """
-    client_data = request.forms.get('json')
-    client_data_dict = json.loads(client_data)
-    return client_data_dict
 
 
 def connect_to_work_server(task_name, route_url=None, input_list=None):
@@ -81,8 +65,8 @@ def connect_to_work_server(task_name, route_url=None, input_list=None):
         ip_to_work_server = "http://" + work_server_ip + ':' + str(server_port) + '/communication/main_server'
         # The server port has its own slashes and they will be removed by the function and make an invalid url
         try:
-            return Com.connect_to_route(route_url, ip_to_work_server, input_list=input_list)
-        except Com.CommunicationError as e:
+            return connect_to_route(route_url, ip_to_work_server, input_list=input_list)
+        except CommunicationError as e:
             print(str(e))
 
 
@@ -101,28 +85,7 @@ def identify(user_name, return_data=False):
         raise_http_error("Unauthorized", "The user name doesn't exist")
 
 
-main_directory = handle_path(os.getcwd())
-website_folder = 'website'
-website_dir = main_directory + '/' + website_folder
-pages_folder = 'pages'
-images_folder = 'images'
-script_folder = 'code_pages'
-py_folder = 'py_of_tasks'
 
-
-def create_folder(folder_name):
-    folder_path = handle_path(main_directory + '/' + folder_name)
-    if not os.path.isdir(folder_path):
-        os.makedirs(folder_path)
-
-
-create_folder(website_folder)
-create_folder(website_folder + '/' + pages_folder)
-create_folder(website_folder + '/' + images_folder)
-create_folder(website_folder + '/' + script_folder)
-create_folder('/' + py_folder)
-base_dir = website_dir + '/' + pages_folder + '/base.html'
-base_form_dir = website_dir + '/' + pages_folder + '/base_form.html'
 
 
 def convert_args_to_route(args):
@@ -153,7 +116,7 @@ def form_handler(answer_route, form_data, default_value):
         if form_line['type'] == 'file':
             accepts_file = True
     return {'post_route': answer_route, 'has_text_line': accepts_file, 'form_details': form_data,
-            'base_form_file': base_form_dir}
+            'base_form_file': Db.base_form_dir}
 
 
 def generate_session_id(id_length=16):
@@ -278,7 +241,7 @@ def get_website_file(file_name, sub_dir="", info_args=None):
     :param info_args:a dictionary filed with values for the template to insert into the HTML file.
     :return:
     """
-    file_dir = handle_path(website_dir + '/' + sub_dir + '/' + file_name)
+    file_dir = Db.handle_path(Db.website_dir + '/' + sub_dir + '/' + file_name)
     if os.path.isfile(file_dir):
         if info_args is None:
             print(template(file_dir))
@@ -301,7 +264,7 @@ def route_handler(route_name, args=None):
     template_dict = {
         'nav_route_dict': routes,
         'nav_current_route': route_name,
-        'base_file': base_dir,
+        'base_file': Db.base_dir,
         'user_name': get_user_from_session()
     }
     if 'needs_username' in routes[route_name]:
@@ -310,7 +273,7 @@ def route_handler(route_name, args=None):
                 if args is not None:
                     template_dict.update(args)
                 template_dict['prev_route'] = route_name
-                return get_website_file('needs_user.html', pages_folder, template_dict)
+                return get_website_file('needs_user.html', Db.pages_folder, template_dict)
 
     if 'handling_function' in routes[route_name]:
         if 'args' in routes[route_name]:
@@ -319,7 +282,7 @@ def route_handler(route_name, args=None):
             template_dict.update(routes[route_name]['handling_function']())
     if args is not None:
         template_dict.update(args)
-    return get_website_file(routes[route_name]['html_file_name'], pages_folder, template_dict)
+    return get_website_file(routes[route_name]['html_file_name'], Db.pages_folder, template_dict)
 
 
 @route('/')
@@ -391,7 +354,7 @@ def signup_form_input():
 
 @route('/images/<image_name>')
 def image_handler(image_name):
-    img_dir = handle_path(website_dir + '/' + images_folder)
+    img_dir = Db.handle_path(Db.website_dir + '/' + Db.images_folder)
     if os.path.isfile(img_dir + '/' + image_name):
         return static_file(image_name, root=img_dir)
     else:
@@ -418,18 +381,17 @@ def cancel_running_task(task_name):
 
 @route('/tasks/<task_name>/task_stats')
 def get_task_stats(task_name):
-    stats = connect_to_work_server(task_name, route_url="get_stats")
-    if stats is None:
-        stats = {"progress_precent": 0, "results": ""}
-    results = Db.get_results(get_user_from_session(), task_name)
-    if results:
-        stats["results"] = results
+    task_details = Db.get_task_process_details(get_user_from_session(), task_name)
+    stats = {"progress_percentage": 0, "results": ""}
+    if task_details:
+        stats["progress_percentage"] = task_details["progress_percentage"]
+    #results = Db.get_results(get_user_from_sessio"n(), task_name)
     return route_handler("tasks/task_stats", stats)
 
 
 @route('/scripts/<script_name>')
 def script_handler(script_name):
-    return get_website_file(script_name, script_folder)
+    return get_website_file(script_name, Db.script_folder)
 
 
 #----------Communication-----------
@@ -439,7 +401,7 @@ def get_task(user_name):
     identify(user_name)
     saved_task = Db.get_free_tasks(user_name)
     if saved_task is None:
-        return package_data(None)
+        return package_data({"Task_name":None})
     else:
         server_ip = request.environ.get('HTTP_X_FORWARDED_FOR') or request.environ.get('REMOTE_ADDR')
         print(str(saved_task["Task_name"]) + ": " + str(saved_task))
@@ -468,12 +430,12 @@ def get_py_file(user_name, requested_py_name):
     #check for record in current tasks wwhere there is a username and that ip.
     #Ch
     identify(user_name)
-    file_dir = main_directory + '/' + py_folder
+    file_dir = Db.main_directory + '/' + Db.py_folder
 
     if requested_py_name.endswith('.py'):
         requested_py_name = requested_py_name[:-4]
     file_name = requested_py_name + "&" + str(user_name) + '.py'
-    if not os.path.isfile(handle_path(file_dir + '/' + file_name)):
+    if not os.path.isfile(Db.handle_path(file_dir + '/' + file_name)):
         print("The server didn't find the file.")
         raise_http_error("Not Found")
     return static_file(file_name, root=file_dir, download=requested_py_name)
@@ -485,11 +447,19 @@ def get_results(user_name):
     identify(user_name)
     server_ip = request.environ.get('HTTP_X_FORWARDED_FOR') or request.environ.get('REMOTE_ADDR')
 
-    results_dict = recieve_information_from_work_server()
+    results_dict = Recieve_information_from_client()
     if results_dict is not None:
         Db.set_results(user_name, server_ip, results_dict["results"])
 
     # return package_data({"Message": "Congradulations"})
+
+@post('/communication/work_server/get_work_unit_results/<user_name>')
+def get_work_unit_results(user_name):
+    identify(user_name)
+    server_ip = request.environ.get('HTTP_X_FORWARDED_FOR') or request.environ.get('REMOTE_ADDR')
+    work_unit_dict = Recieve_information_from_client()
+    Db.add_work_unit(user_name, server_ip, work_unit_dict)
+
 
 
 @route('/communication/worker/get_task/<user_name>')

@@ -7,7 +7,7 @@ import sys
 import time
 import threading
 import Calcfarm_server_database_connector as Db
-import Calc_Farm_Communications as com
+from Calc_Farm_Essential import *
 TIMEOUT = 5
 # If the servers don't respond after TIMEOUT seconds, the worker disconncts and tries again.
 PORT = 8080
@@ -28,7 +28,7 @@ else:
 
 username = ARGS[0]
 
-Main_Server_IPAddr = "192.168.1.101"
+Main_Server_IPAddr = "10.0.0.11"
 #Interesting how computers have differnt IPs in different wifis
 Main_Server_url = "http://" + Main_Server_IPAddr + ':' + str(MAIN_SERVER_PORT) + '/communication/work_server'
 
@@ -95,7 +95,7 @@ create_folder(py_dir)
 
 # Send Functions:
 
-def connect_to_route(route_url=None, input_list=None):
+def connect_to_main_server(route_url=None, input_list=None):
 
     """
     This function sends 'get' request to one of the routes on the main server.
@@ -113,7 +113,7 @@ def connect_to_route(route_url=None, input_list=None):
     if route_url is None:
         route_url = ''
 
-    return com.connect_to_route(route_url, Main_Server_url, input_list)
+    return connect_to_route(route_url, Main_Server_url, input_list)
 
 
 def send_to_server(route_url, data, input_list=None):
@@ -132,7 +132,7 @@ def send_to_server(route_url, data, input_list=None):
 
     input_list = [username] + input_list
 
-    return com.post_to_route(route_url,data,Main_Server_url,input_list=input_list)
+    return post_to_route(route_url, data, Main_Server_url, input_list=input_list)
 
 
 def get_file(requested_py_name):
@@ -142,7 +142,7 @@ def get_file(requested_py_name):
     :return: A unique ID of a hexadecimal string that the worker will use to identify itself to the server.
     """
 
-    file_data = connect_to_route("getpyfile", input_list=[requested_py_name])
+    file_data = connect_to_main_server("getpyfile", input_list=[requested_py_name])
     if not requested_py_name.endswith('.py'):
         requested_py_name = requested_py_name + '.py'
     download_folder_dir = handle_path(main_directory + '/' + py_folder + '/' + requested_py_name)
@@ -174,38 +174,27 @@ def task_divider(first_num, last_num):
     global work_status
     print("loading")
     work_unit_time1 = time.time()
-    with db_lock:
-        while index - 1 + WORK_UNIT_LENGTH <= last_num - reminder:
-            work_unit_data = {
-                "first_num": index,
-                "last_num": index - 1 + WORK_UNIT_LENGTH,
-            }
-            Db.insert_work_unit(work_unit_data)
-            work_units_amount = work_units_amount + 1
-            index = index + WORK_UNIT_LENGTH
+    #with db_lock:
+    while index - 1 + WORK_UNIT_LENGTH <= last_num - reminder:
+        work_unit_data = {
+            "first_num": index,
+            "last_num": index - 1 + WORK_UNIT_LENGTH,
+        }
+        Db.insert_work_unit(work_unit_data)
+        work_units_amount = work_units_amount + 1
+        index = index + WORK_UNIT_LENGTH
 
-        if reminder > 0:
-            work_unit_data = {
-                "first_num": last_num - reminder + 1,
-                "last_num": last_num
-            }
-            Db.insert_work_unit(work_unit_data)
-            work_units_amount = work_units_amount + 1
-        work_unit_total_time = time.time() - work_unit_time1
-        print("finished in {} seconds".format(work_unit_total_time))
-        work_status = Db.WorkStatusNames.has_work.value
+    if reminder > 0:
+        work_unit_data = {
+            "first_num": last_num - reminder + 1,
+            "last_num": last_num
+        }
+        Db.insert_work_unit(work_unit_data)
+        work_units_amount = work_units_amount + 1
+    work_unit_total_time = time.time() - work_unit_time1
+    print("finished in {} seconds".format(work_unit_total_time))
+    work_status = Db.WorkStatusNames.has_work.value
         # print(work_units)
-
-
-def recieve_information_from_client():
-    """
-    This function receives a 'POST' request method from a client and get it's data
-    :return: the data the client sent in the POST request(as a part of their protocol, the client sends its data
-    in the "json" header, where there is its data in the form of a json file) in the form of a dictionary.
-    """
-    client_data = request.forms.get('data')
-    client_data_dict = json.loads(client_data)
-    return client_data_dict
 
 
 def raise_http_error(status_name, status_details=None):
@@ -302,19 +291,20 @@ def startworking():
     global py_name
     global Task_Conditional
     global db_lock
-    task_data = None
-    while task_data is None:
-        task_data = connect_to_route("get_task")
-        if task_data is None:
-            time.sleep(5)
-        else:
-            py_name = task_data["exe_name"]
-            print('Working on the task "{}"'.format(py_name))
-            get_file(py_name)
-            Task_Conditional = task_data["Task_conditional"]
-            db_lock = threading.lock()
+    task_data = connect_to_main_server("get_task")
+    task_name = task_data.get("Task_name", None)
+    #A part of thier protocol is if the main server doesn't have tasks to give, then it will send to any running
+    #work server {"exe_name":None} to say there are no tasks that are untouched.
+    while not task_name:
+        time.sleep(5)
+        task_data = connect_to_main_server("get_task")
+        task_name = task_data.get("Task_name", None)
 
-            task_divider(task_data["first_num"], task_data["last_num"])
+    print('Working on the task "{}"'.format(task_name))
+    get_file(task_data["exe_name"])
+    Task_Conditional = task_data["Task_conditional"]
+    # db_lock = threading.lock()
+    task_divider(task_data["first_num"], task_data["last_num"])
 
 
 @route('/')
@@ -383,52 +373,29 @@ def update(worker_id):
     global finished_work_units_amount
     global work_status
     global time_end
-    worker_log_dict = recieve_information_from_client()
-    worker_work_unit = Db.get_work_unit_by_worker(worker_id)
+    worker_log_dict = Recieve_information_from_client()
+    work_unit = Db.get_work_unit_by_worker(worker_id)
 
     if worker_log_dict['status'] == 1:
-
-        if worker_work_unit is None:
-            raise_http_error("Bad Request", "A worker who has no work unit assigned to it, can't do an update")
-        work_unit_id = worker_work_unit['work_unit_id']
-
-        work_unit_results = worker_log_dict['results']
-        # if work_units[data_dict['status']] == WorkUnitStatusNames.in_progress.value:
-        if worker_work_unit["work_unit_status"] == Db.WorkUnitStatusNames.in_progress.value:
-            if worker_id == worker_work_unit['worker_id']:
-                Db.update_results(work_unit_id, work_unit_results)
-                finished_work_units_amount += 1
-                if finished_work_units_amount == work_units_amount:
-                    time_end = time.time()
-                    work_status = Db.WorkStatusNames.finished_work.value
-                    results = Db.collect_results()
-                    send_to_server('get_results', {"results": results})
-                    print(results)
-                    print("Made in {} seconds".format(time_end - time_start))
-                    # sys.exit(1)
-                    # You need  to give time for all the workers to realize their work is done and shut down
-            else:
-                raise_http_error("I'm a teapot")
-        else:
-            raise_http_error("I'm a teapot")
-    elif worker_log_dict['status'] == 0:
-        Db.remove_worker(worker_id)
-    elif worker_log_dict['status'] == -1:
+        finished_work_units_amount += 1
+        Db.update_results(work_unit['work_unit_id'])
+        result_log = {}
+        work_unit["results"] = worker_log_dict["results"]
+        work_unit.pop("work_unit_status")
+        result_log["work_unit"] = work_unit
+        result_log["progress_percentage"] = 100.0 * finished_work_units_amount / work_units_amount
+        send_to_server("get_work_unit_results", result_log)
+        if finished_work_units_amount == work_units_amount:
+            time_end = time.time()
+            work_status = Db.WorkStatusNames.finished_work.value
+            results = Db.collect_results()
+            send_to_server('get_results', {"results": results})
+            print(results)
+            print("Made in {} seconds".format(time_end - time_start))
+    else:
         Db.free_work_unit_from_worker(worker_id)
-
-
-@route('/communication/main_server/get_stats')
-def get_stats():
-    """
-    This function calculates results for the main server to display on the "task_stats" page.
-    :return:
-    """
-    stats = {
-        "progress_precent": 100.0 * finished_work_units_amount / work_units_amount,
-        "results": None if work_status == Db.WorkStatusNames.finished_work.value else Db.collect_results(),
-        # If it's already finished, then all the results were already sent to the main server.
-    }
-    return stats
+        if worker_log_dict['status'] == 0:
+            Db.remove_worker(worker_id)
 
 
 @route('/communication/main_server/stop_working')
@@ -455,7 +422,7 @@ IPAddr = socket.gethostbyname(hostname)
 print("Server {} of IP {} is ready to go!".format(hostname, IPAddr))
 
 print("http://" + IPAddr + ':' + str(PORT))
-# print(connect_to_route('lol').content)
+# print(connect_to_main_server('lol').content)
 results = [1, 2, 3, 4, 5, 6, 7, 8, 9]
 # send_to_server('get_results',{"results":results})
 startworking()
