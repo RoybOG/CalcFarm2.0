@@ -1,24 +1,5 @@
 import CalcFarm_Database_Analyser_2 as Db
-import enum
-
-
-class WorkStatusNames(enum.Enum):
-    no_work = 0
-    has_work = 1
-    finished_work = 2
-
-
-class WorkUnitStatusNames(enum.Enum):
-    untouched = 0
-    in_progress = 1
-    finished = 2
-
-
-class WorkerStatusNames(enum.Enum):
-    just_joined = 0
-    working = 1
-    waiting = 2
-    crashed = 3
+from Calc_Farm_Essential import *
 
 
 class WorkerServerError(Exception):
@@ -49,7 +30,8 @@ create table work_units
     first_num int not null,
     last_num int not null,
     work_unit_status int default {},
-    worker_id varchar
+    worker_id varchar,
+    failed_count int default 0
         constraint table_name_workers_worker_id_fk
             references workers
 );
@@ -114,8 +96,7 @@ def get_work_unit(work_unit_id):
     :param work_unit_id: The id of the work unit.
     :return: Returns data about the work unit. Returns None if it doesn't exist.
     """
-    work_unit_data = database_handler.find_specific_record("work_units", {"work_unit_id": work_unit_id}, return_data=True)
-    return work_unit_data
+    return database_handler.find_specific_record("work_units", {"work_unit_id": work_unit_id}, return_data=True)
 
 
 def get_work_unit_by_worker(worker_id):
@@ -124,20 +105,22 @@ def get_work_unit_by_worker(worker_id):
     :param worker_id: The id of the worker that was assigned to the that work unit.
     :return: Returns the entire row about the specific work unit. Returns None if it doesn't exist.
     """
-    work_unit_data = database_handler.find_specific_record("work_units", {"worker_id": worker_id}, return_data=True)
-    return work_unit_data
+    return database_handler.find_specific_record("work_units", {"worker_id": worker_id}, return_data=True)
 
 
 def get_free_work_unit():
     """
     Gets from the database a work unit that wasn't assigned to any worker and isn't worked on.
+    It selects the work unit with the smallest ID, such that previous work units that were freed from workers that
+    failed calculating them, will be preferred other the next work units.
     :return: a work unit as a dictionary of columns and values
     """
-
-    work_unit_data = database_handler.load_data("work_units",
-                                               condition="work_unit_status=" + str(WorkUnitStatusNames.untouched.value),
-                                               row_num=1)
-    #Here I use load data becuase an int doesn't need special treamtment to be encoded
+    smallest_id = database_handler.collect_sql_quarry_result("select min(work_unit_id) from work_units")[0]
+    work_unit_data = database_handler.find_specific_record("work_units",
+                                                           values={"work_unit_status":
+                                                                       WorkUnitStatusNames.untouched.value,
+                                                                   "work_unit_id": smallest_id}, row_num=1,
+                                                           return_data=True)
     return work_unit_data
 
 
@@ -159,17 +142,23 @@ def assign_work_unit(work_unit_id, worker_id):
 def free_work_unit(work_unit_id):
     """
 
-    :param work_unit:
-    :return:
+    :param work_unit_id:
+    :return: the amount of times the work unit was freed due to a failute in calculating it.
+    If it was failed to be calculated 3 times, then it will stop working on the task and
+    return tell the main server which work unit crashed the task. Otherwise.
     """
     work_unit = get_work_unit(work_unit_id)
     database_handler.update_records("work_units",
-                                   {"worker_id": None, "work_unit_status": WorkUnitStatusNames.untouched.value},
-                                   condition="work_unit_id=?", code_args=[work_unit_id])
+                                   {"worker_id": None, "work_unit_status": WorkUnitStatusNames.untouched.value,
+                                    "failed_count": work_unit["failed_count"] + 1},
+                                    condition="work_unit_id= :id", code_args={"id": work_unit_id})
 
     worker_id = work_unit['worker_id']
     database_handler.update_records("workers", {"worker_status": WorkerStatusNames.waiting.value},
-                                   condition="worker_id=?", code_args=[worker_id])
+                                   condition="worker_id= :id", code_args={"id": worker_id})
+
+    return work_unit["failed_count"] + 1
+
 
 def free_work_unit_from_worker(worker_id):
     """
@@ -178,16 +167,15 @@ def free_work_unit_from_worker(worker_id):
     :return:
     """
     work_unit = get_work_unit_by_worker(worker_id)
-    if work_unit is not None:
-        database_handler.update_records("work_units",
-                                   {"worker_id": None, "work_unit_status": WorkUnitStatusNames.untouched.value},
-                                   condition="work_unit_id=?", code_args=[work_unit["work_unit_id"]])
-
-        database_handler.update_records("workers", {"worker_status": WorkerStatusNames.waiting.value},
-                                   condition="worker_id=?", code_args=[worker_id])
+    if work_unit:
+        return free_work_unit(work_unit["work_unit_id"])
 
 
 def remove_worker(worker_id):
+    """
+    Deletes a worker who stopped running from the Work server's database.
+    :param worker_id: The ID of the worker.
+    """
     free_work_unit_from_worker(worker_id)
     database_handler.delete_records("workers","worker_id = ?", [worker_id])
 
@@ -201,4 +189,4 @@ def update_results(work_unit_id):
 
     database_handler.delete_records("work_units", "work_unit_id=?", con_args=[work_unit_id])
     database_handler.update_records("workers", {"worker_status": WorkerStatusNames.waiting.value},
-                                   condition="worker_id=?", code_args=[work_unit_id])
+                                   condition="worker_id= :id", code_args={"id": work_unit_id})

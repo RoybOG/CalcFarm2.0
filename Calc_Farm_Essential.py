@@ -2,6 +2,7 @@ import requests
 import bottle
 import time
 import json
+import enum
 import sys
 TIMEOUT = 5
 
@@ -185,11 +186,10 @@ def connect_to_route(route_url, server_ip, input_list=None):
         except ValueError:
             resp_content = resp.content
 
-        if resp_content:
-            return resp_content
-        else:
-            inner_error = CommunicationError("The server returned nothing")
-            raise RepeatError(inner_error)
+        return resp_content
+        # else:
+        #    inner_error = CommunicationError("The server returned nothing")
+        #    raise RepeatError(inner_error)
 
     except requests.exceptions.HTTPError:
         inner_error = HttpError(resp.status_code)
@@ -397,3 +397,37 @@ def create_folder(folder_name):
     if not os.path.isdir(folder_path):
         os.makedirs(folder_path)"""
 """"""
+
+# Communication Protocol
+
+
+class WorkServerStatusNames(enum.Enum):
+    no_work = 0
+    has_work = 1
+    finished_work = 2
+
+
+class WorkUnitStatusNames(enum.Enum):
+    untouched = 0
+    in_progress = 1
+
+
+class WorkUnitCalculationStatusNames(enum.Enum):
+    calculated = 1
+    failed = -1
+    crashed = -2
+
+
+class WorkerStatusNames(enum.Enum):
+    just_joined = 0
+    waiting = 1
+    working = 2
+    shut_down = 3
+
+
+class TaskStatusNames(enum.Enum):
+    untouched = 0
+    in_progress = 1
+    finished = 2
+    failed = -1
+    crashed = -2

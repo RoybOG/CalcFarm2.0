@@ -1,7 +1,6 @@
 from bottle import route, post, run, redirect, abort, static_file, template, request, response
 import socket
 import os
-import enum
 import json
 import secrets
 import uuid
@@ -447,9 +446,9 @@ def get_results(user_name):
     identify(user_name)
     server_ip = request.environ.get('HTTP_X_FORWARDED_FOR') or request.environ.get('REMOTE_ADDR')
 
-    results_dict = Recieve_information_from_client()
-    if results_dict is not None:
-        Db.set_results(user_name, server_ip, results_dict["results"])
+    results_log = Recieve_information_from_client()
+    if results_log is not None:
+        Db.finish_results(user_name, server_ip, results_log["results"])
 
     # return package_data({"Message": "Congradulations"})
 

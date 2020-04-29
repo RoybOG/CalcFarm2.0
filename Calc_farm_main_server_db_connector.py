@@ -1,6 +1,6 @@
 import CalcFarm_Database_Analyser_2 as Db
+from Calc_Farm_Essential import *
 import os
-import enum
 import hashlib
 import math
 from random import choice
@@ -12,19 +12,7 @@ class MainServerError(Exception):
     pass
 
 
-class TaskStatusNames(enum.Enum):
-    untouched = 0
-    in_progress = 1
-    finished = 2
-
-
 task_status_names_list = ["untouched", "in_progress", "finished"]
-
-
-class WorkStatusNames(enum.Enum):
-    no_work = 0
-    has_work = 1
-    finished_work = 2
 
 HTTPSTATUSCODES = {"Bad Request": 400,
                    "Unauthorized": 401,
@@ -165,7 +153,7 @@ create table current_tasks
 	Task_results_file varchar,
 	work_units_file varchar
 );
-""".format(TaskStatusNames.untouched.value, WorkStatusNames.no_work.value))
+""".format(TaskStatusNames.untouched.value, WorkServerStatusNames.no_work.value))
 #Plase do that every time the server's status changes, it will update the main server in "Server_Status
 for table_code in tables_code:
     database_handler.create_table(table_code)
@@ -282,7 +270,7 @@ def start_working_on_a_task(user_name, task_name):
             elif total_percent == 100 and normal_tasks:
                 raise MainServerError("The percentages are too high and don't leave space to normal tasks.")
 
-        columns = ("work_unit_id", "first_num", "last_num", "worker_id", "results")
+        columns = ("work_unit_id", "first_num", "last_num", "worker_id", "failed_count", "results")
         database_handler.create_table(
         """
         CREATE TABLE {}_{}_Results_Table
@@ -293,6 +281,7 @@ def start_working_on_a_task(user_name, task_name):
         	{} int not null,
             {} int not null,
             {} varchar not null,
+            {} int,
         	{} longblob not null
         )
         """.format(*((task_name, user_name,) + columns)), replace_table=True)
@@ -407,19 +396,21 @@ def add_work_unit(user_name, work_server_ip, result_log):
             if is_task_conditional(user_name, task_details["Task_name"]):
                 pass
             else:
-                id = work_unit["work_unit_id"]
-
-                new_work_unit = work_unit
+                new_last_id = work_unit["work_unit_id"]
+                add_results_to_files_default(user_name, task_details["Task_name"], results_table, work_unit)
+                new_work_unit = database_handler.find_specific_record(results_table, {"work_unit_id": new_last_id + 1},
+                                                                      return_data=True)
                 while new_work_unit:
-                    add_results_to_files_default(user_name, task_details["Task_name"], results_table, work_unit)
-                    id += 1
-                    new_work_unit = database_handler.find_specific_record(results_table, {"work_unit_id": id})
-                if id > work_unit["work_unit_id"]:
-                    database_handler.update_records("current_tasks",
-                                                    values={"progress_percentage": result_log["progress_percentage"],
-                                                            "last_consecutive_work_unit": id}
-                                                    , condition="server_ip=:server_ip and user_name=:user_name",
-                                                    code_args={"server_ip": work_server_ip, "user_name": user_name})
+                    add_results_to_files_default(user_name, task_details["Task_name"], results_table, new_work_unit)
+                    new_last_id += 1
+                    new_work_unit = database_handler.find_specific_record(results_table,
+                                                                          {"work_unit_id": new_last_id + 1},
+                                                                          return_data=True)
+                database_handler.update_records("current_tasks",
+                                                values={"progress_percentage": result_log["progress_percentage"],
+                                                        "last_consecutive_work_unit": new_last_id},
+                                                condition="server_ip=:server_ip and user_name=:user_name",
+                                                code_args={"server_ip": work_server_ip, "user_name": user_name})
         else:
             database_handler.update_records("current_tasks",
                                         values={"progress_percentage": result_log["progress_percentage"]}
@@ -454,16 +445,14 @@ def is_task_conditional(user_name, task_name, return_Condition=False):
                                         ,check_args={"Task_name": task_name, "user_name": user_name})
 
 
-
-
-
 def append_to_file(file_name , text, newline=True):
     file_dir = main_directory  + "/" + results_folder + "/" + file_name
     with open(file_dir, "a") as writer:
         if newline:
-            writer.write(str(text) + "\n")
+            writer.write(text + "\n")
         else:
-            writer.write(str(text))
+            writer.write(text)
+
 
 def add_results_to_files_default(user_name, task_name, results_table, work_unit):
     """
@@ -478,8 +467,29 @@ def add_results_to_files_default(user_name, task_name, results_table, work_unit)
     """
     task_details = get_task_process_details(user_name, task_name)
     results_file , work_units_file = task_details["Task_results_file"] , task_details["work_units_file"]
-    append_to_file(work_units_file, work_unit)
+    append_to_file(work_units_file, str(work_unit))
 
+    results = work_unit["results"]
+    str_results = repr(results)
+    if isinstance(results, list):
+        str_results = str_results[1:-1]
+
+    if work_unit["work_unit_id"] == 1:
+        append_to_file(results_file, "[" + str_results)
+    else:
+        append_to_file(results_file, ', ' + str_results)
+
+
+def finish_results(user_name, work_server_ip, result_log):
+    task_details = task_details = database_handler.find_specific_record("current_tasks",
+                                                          {"server_ip": work_server_ip, "user_name": user_name},
+                                                          return_data=True)
+    results_file, work_units_file = task_details["Task_results_file"], task_details["work_units_file"]
+
+    if result_log["server_status"] == TaskStatusNames.crashed.value:
+        if result_log["problematic_work_unit"]["work_unit_id"] > 1:
+            append_to_file(results_file, "]\n", newline=False)
+        append_to_file(results_file, "This work unit crashed the code: " + str(result_log["problematic_work_unit"]))
 
 """  
 def add_results_to_files_conditional(task_name, user_name, results_table, work_unit):
@@ -495,8 +505,10 @@ def add_results_to_files_conditional(task_name, user_name, results_table, work_u
                                                          return_data=True)
     results_file , work_units_file = task_details["Task_results_file"] , task_details["work_units_file"]
     append_to_file(work_units_file, work_unit)
-"""
-def set_results(user_name, work_server_ip, last_consecutive_work_unit_id, results_table):
+
+def set_results(user_name, work_server_ip, last_consecutive_work_unit_id):
+
+    
     id = last_consecutive_work_unit_id
     while True:
         results = database_handler.find_specific_record(results_table, {"work_unit_id": id}, return_data=True,
@@ -504,7 +516,7 @@ def set_results(user_name, work_server_ip, last_consecutive_work_unit_id, result
         if not results:
             return id
         id += 1
-
+"""
 
 def collect_results():
     """
@@ -532,6 +544,12 @@ def collect_results():
 
 
 def get_results(user_name, task_name):
+    """
+
+    :param user_name:
+    :param task_name:
+    :return:
+    """
     results = get_task_process_details(user_name, task_name)
     if results is None:
         return None
@@ -542,9 +560,8 @@ def get_results(user_name, task_name):
 def free_task(task_name, user_name):
     """
 
-    :param task_name
-    :param user_name
-    :return:
+    :param task_name: the name of a task.
+    :param user_name: the name of the user who created the task
     """
     database_handler.update_records("current_tasks",
                                     {"server_ip": None,
@@ -554,6 +571,11 @@ def free_task(task_name, user_name):
 
 
 def assign_worker(user_name):
+    """
+
+    :param user_name:
+    :return:
+    """
     priority_current_tasks = database_handler.load_data("current_tasks",
                                                  condition="user_name=? and work_force_percentage is not null"
                                                            " and server_ip is not null",
@@ -667,6 +689,7 @@ def main():
     # assign_task("c", "task5", "10.0.0.7")
     start_working_on_a_task('Default_UserName', "prime_range")
     print(is_task_conditional("c", "task6"))
+    print(database_handler.table_info("current_tasks")[0].keys())
 #insert_task('a', {"Task_name": "task4", "first_num": 1, "last_num": 10000, "exe_name": "gold",
 #                  "work_force_percentage":15})
 

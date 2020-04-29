@@ -28,7 +28,7 @@ else:
 
 username = ARGS[0]
 
-Main_Server_IPAddr = "10.0.0.11"
+Main_Server_IPAddr = "192.168.1.107"
 #Interesting how computers have differnt IPs in different wifis
 Main_Server_url = "http://" + Main_Server_IPAddr + ':' + str(MAIN_SERVER_PORT) + '/communication/work_server'
 
@@ -38,7 +38,7 @@ global Task_Conditional
 work_units_amount = 0
 finished_work_units_amount = 0
 WORK_UNIT_LENGTH = 100000
-work_status = Db.WorkStatusNames.no_work.value
+work_status = WorkServerStatusNames.no_work.value
 global time_start, time_end
 started_working = False
 
@@ -193,7 +193,7 @@ def task_divider(first_num, last_num):
         work_units_amount = work_units_amount + 1
     work_unit_total_time = time.time() - work_unit_time1
     print("finished in {} seconds".format(work_unit_total_time))
-    work_status = Db.WorkStatusNames.has_work.value
+    work_status = WorkServerStatusNames.has_work.value
         # print(work_units)
 
 
@@ -319,7 +319,7 @@ def signup():
     The worker who communicated to this server for the first time, will get a unique ID.
     :return:
     """
-    if work_status == Db.WorkStatusNames.finished_work.value:
+    if work_status == WorkServerStatusNames.finished_work.value:
         raise_http_error("Forbidden", "This server doesn't need anymore workers, it finished it's job")
     new_worker_id = str(id_generator())
     print("New worker entered " + new_worker_id)
@@ -344,11 +344,11 @@ def getworkunit(worker_id):
     global time_start
     global started_working
     global work_status
-    if work_status == Db.WorkStatusNames.has_work.value:
+    if work_status == WorkServerStatusNames.has_work.value:
 
         saved_work_unit = Db.get_free_work_unit()
         if saved_work_unit is None:
-            work_status = Db.WorkStatusNames.no_work.value
+            work_status = WorkServerStatusNames.no_work.value
         else:
             if not started_working:
                 print("Starting to work!")
@@ -376,7 +376,7 @@ def update(worker_id):
     worker_log_dict = Recieve_information_from_client()
     work_unit = Db.get_work_unit_by_worker(worker_id)
 
-    if worker_log_dict['status'] == 1:
+    if worker_log_dict['calc_status'] == WorkUnitCalculationStatusNames.calculated.value:
         finished_work_units_amount += 1
         Db.update_results(work_unit['work_unit_id'])
         result_log = {}
@@ -386,16 +386,43 @@ def update(worker_id):
         result_log["progress_percentage"] = 100.0 * finished_work_units_amount / work_units_amount
         send_to_server("get_work_unit_results", result_log)
         if finished_work_units_amount == work_units_amount:
-            time_end = time.time()
-            work_status = Db.WorkStatusNames.finished_work.value
-            results = Db.collect_results()
-            send_to_server('get_results', {"results": results})
+            total_time = time.time() - time_start
+            work_status = WorkServerStatusNames.finished_work.value
+            results_log = {
+                "time": total_time,
+                "server_status": TaskStatusNames.finished.value
+            }
+            send_to_server('get_results', {"results": results_log})
             print(results)
-            print("Made in {} seconds".format(time_end - time_start))
+            print("Made in {} seconds".format(time_end ))
+    elif worker_log_dict['calc_status'] == WorkUnitCalculationStatusNames.crashed.value:
+        work_status = WorkServerStatusNames.finished_work.value
+        total_time = time.time() - time_start
+        results_log = {
+            "time": total_time,
+            "server_status": TaskStatusNames.crashed.value,
+            "problematic_work_unit": work_unit
+        }
+        send_to_server('get_results', {"results": results_log})
     else:
-        Db.free_work_unit_from_worker(worker_id)
-        if worker_log_dict['status'] == 0:
-            Db.remove_worker(worker_id)
+        failed_amount = Db.free_work_unit_from_worker(worker_id)
+        #  The amount of a times workers failed to calculate that work unit.
+
+        if failed_amount == 3:
+            work_status = WorkServerStatusNames.finished_work.value
+            total_time = time.time() - time_start
+            results_log = {
+                "time": total_time,
+                "server_status": TaskStatusNames.crashed.value,
+                "problematic_work_unit": work_unit
+            }
+            send_to_server('get_results', {"results": results_log})
+
+
+@route('/communication/worker/quit/<worker_id>')
+def quit(worker_id):
+    worker_data = identify(worker_id)
+    Db.remove_worker(worker_id)
 
 
 @route('/communication/main_server/stop_working')

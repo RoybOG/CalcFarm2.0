@@ -538,8 +538,8 @@ class Database:
         The condition needs to be written in sql.
         Make sure the user can't affect the condition, because the user can do an injection.
 
-        :param code_args: A dictionary of arguemnts to ascape into the condition. If you HAVE to ascape a list, you can,
-        but it will be transferred to a dictionary, which will be slow the program alot more.
+        :param code_args: A dictionary of arguments to escape into the condition. If you HAVE to escape a list, you can,
+        but it will be transferred to a dictionary, which will be slow the program significantly.
         of code you want to safely escape into the code of the condition.
         If it's a dictionary, the keys need to be names that are present in where you want to escape the value to in
         the code, with ":" before it.
@@ -622,8 +622,13 @@ class Database:
         if not info_dict:
             raise WritingError("The table doesn't exist")
 
-        for encrypted_column in encrypted_columns:
-            insert_dict[encrypted_column] = Database.__type_dump(insert_dict[encrypted_column],
+        safe_dictionary = {}
+        # This dictioanry is a copy of "insert_dict" and includes all the values you want to dump.
+        # It will encrypt it by the module's protocol and then safely escape it into the sql code to prevent SQL
+        # injection.
+
+        for column in insert_dict:
+            safe_dictionary[column] = Database.__type_dump(insert_dict[column],
                                                                  Database.__encoded_data_type)
 
         first_index = True
@@ -635,7 +640,7 @@ class Database:
 
 
         new_row_code += new_row_code_values + ';'
-        self.execute_sql_code(new_row_code, insert_dict)
+        self.execute_sql_code(new_row_code, safe_dictionary)
 
     def create_function(self, sql_function, sql_function_name):
         self.db_con.create_function(sql_function_name, sql_function.__code__.co_argcount, sql_function)
